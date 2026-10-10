@@ -280,7 +280,7 @@ class Fixture:
             return {
                 **config,
                 "external-controller": f"127.0.0.1:{self.controller_port}",
-                "mixed-port": self.proxy_port,
+                "mixed-port": self.proxy_port if config.get("mixed-port") else 0,
                 "bind-address": "127.0.0.1",
             }
 
@@ -295,6 +295,7 @@ class Fixture:
             validator=lambda config: manager.validate_mihomo(
                 self.directory, config_for_test(config), str(self.exe)
             ),
+            restore_selections=self.client.restore_selections,
         )
         config = config_for_test(self.store.config({}))
         path = self.directory / "config.json"

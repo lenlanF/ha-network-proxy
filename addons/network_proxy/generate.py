@@ -82,11 +82,12 @@ def generate(options, *, bootstrap=False, subscription_document=None):
     choice = source_choice(options)
     if choice not in ("subscription", "lan"):
         raise ValueError("Invalid outlet source")
+    enabled = options.get("proxy_enabled", True)
     mode, scope = (
-        options.get("core_mode", "rule"),
+        options.get("core_mode", "native"),
         options.get("traffic_mode", "explicit"),
     )
-    if mode not in ("rule", "global", "direct") or scope not in (
+    if mode not in ("native", "rule", "global", "direct") or scope not in (
         "explicit",
         "haos",
         "selected",
@@ -98,7 +99,11 @@ def generate(options, *, bootstrap=False, subscription_document=None):
             if not bootstrap:
                 raise ConfigError("subscription_not_ready")
         else:
-            config = compose(subscription_document, options.get("extension_yaml", ""))
+            config = compose(
+                subscription_document,
+                options.get("extension_yaml", ""),
+                namespace=options.get("active_subscription", ""),
+            )
             proxies, groups = config.get("proxies", []), config.get("proxy-groups", [])
             if not isinstance(proxies, list) or not isinstance(groups, list):
                 raise ConfigError("subscription_invalid")
@@ -142,6 +147,16 @@ def generate(options, *, bootstrap=False, subscription_document=None):
         config, target = {"proxies": [proxy], "proxy-groups": []}, "LAN"
     elif not bootstrap:
         raise ValueError("Selected source is not configured")
+    if mode == "native":
+        mode = (
+            (subscription_document or {}).get("mode", "rule")
+            if choice == "subscription"
+            else "rule"
+        )
+        if mode not in ("rule", "global", "direct"):
+            raise ConfigError("subscription_invalid")
+    if not enabled:
+        scope = "explicit"
     if target == "REJECT" and scope != "explicit":
         raise ConfigError("source_required")
     config.setdefault("proxies", [])
@@ -161,7 +176,7 @@ def generate(options, *, bootstrap=False, subscription_document=None):
             raise ValueError("Invalid default action")
         supplied_rules = ["MATCH," + (ROOT_GROUP if default == "proxy" else "DIRECT")]
     config["rules"] = LOCAL_RULES + extra_rules(options) + supplied_rules
-    share = options.get("share_enabled", False)
+    share = enabled and options.get("share_enabled", False)
     user, password = (
         options.get("proxy_username", ""),
         options.get("proxy_password", ""),
@@ -170,7 +185,7 @@ def generate(options, *, bootstrap=False, subscription_document=None):
         raise ValueError("Set a valid outlet credential pair")
     config.update(
         {
-            "mixed-port": 7890,
+            "mixed-port": 7890 if enabled else 0,
             "allow-lan": share,
             "bind-address": "*" if share else "127.0.0.1",
             "lan-allowed-ips": [

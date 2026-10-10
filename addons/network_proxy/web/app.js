@@ -58,13 +58,13 @@ async function action(button, label, operation) {
   $("notice").hidden = true; $("notice").textContent = "";
   const previous = button.textContent; button.disabled = true; button.textContent = label;
   try { await operation(); } catch (error) { notice(error.message || "无法连接应用。", true); }
-  finally { button.disabled = false; button.textContent = previous; }
+  finally { button.disabled = false; button.textContent = button.id === "proxy-toggle" ? settings.proxy_enabled === false ? "启用代理" : "关闭代理" : previous; }
 }
 function drawOutlets(status) {
-  $("current-node").textContent = status.configured ? status.current_label : "未配置";
+  $("current-node").textContent = status.proxy_enabled === false ? "代理已关闭" : status.configured ? status.current_label : "未配置";
   $("nodes").replaceChildren();
   for (const outlet of status.outlets) {
-    const selected = status.configured && status.current === outlet.name;
+    const selected = status.proxy_enabled !== false && status.configured && status.current === outlet.name;
     const row = element("div", selected ? "node selected" : "node"), main = element("div", "node-main");
     main.append(element("span", "node-name", outlet.label), element("span", "node-meta", selected ? "使用中" : outlet.ready ? "已配置" : "尚未配置"));
     const use = element("button", "secondary", selected ? "使用中" : "使用");
@@ -83,7 +83,7 @@ async function refreshEvents() {
 async function refreshStatus() {
   try {
     const status = await api("status"); $("connection-dot").className = "status-dot connected"; $("connection-text").textContent = "内核已连接"; $("core-version").textContent = `Mihomo · ${status.version}`;
-    $("core-state").textContent = status.recovery_error ? "配置恢复中" : status.configured ? "内核运行中" : "待配置代理源";
+    $("core-state").textContent = status.proxy_enabled === false ? "仅管理模式" : status.recovery_error ? "配置恢复中" : status.configured ? "内核运行中" : "待配置代理源";
     $("recovery-note").hidden = !status.recovery_error;
     $("recovery-note").textContent = status.recovery_error ? `已进入配置恢复模式：${errors[status.recovery_error] || "原配置校验失败。"} 原设置已保留，代理出口暂不可用，未启用透明代理或局域网共享。修正后保存，成功后保持显式模式；需要时重新启用流量接入和共享。` : "";
     $("refresh-subscription").disabled = !status.has_subscription;
@@ -92,6 +92,10 @@ async function refreshStatus() {
     $("scope-note").textContent = status.traffic_scope === "selected" ? "集成请求由配套集成接入。勾选集成并不表示其所有网络客户端均已覆盖。" : status.traffic_scope === "haos" ? "整台 HAOS 的出站连接接入代理；管理入口与私有地址直连。" : "当前仅提供代理出口，未透明接入 HAOS 出站流量。";
     if (status.recovery_error) $("scope-note").textContent = "当前处于配置恢复模式：代理出口拒绝请求，未启用透明接入或局域网共享。";
     $("integration-state").textContent = status.integration_connected ? "配套集成已连接，每 10 秒同步网页设置。" : "配套集成尚未连接。添加后可在本网页选择集成实例。";
+    if (status.proxy_enabled === false) { $("scope-note").textContent = "代理已关闭：不提供代理出口，不接入 HAOS / 应用 / 集成流量；管理和订阅设置继续可用。"; $("traffic-state").textContent = "未代理"; $("traffic-detail").textContent = "管理服务继续运行"; }
+    $("proxy-toggle").textContent = status.proxy_enabled === false ? "启用代理" : "关闭代理";
+    $("proxy-toggle").setAttribute("aria-pressed", String(status.proxy_enabled !== false));
+    $("test-outlet").disabled = status.proxy_enabled === false;
     drawOutlets(status);
   } catch (error) { $("connection-dot").className = "status-dot"; $("connection-text").textContent = "连接中断"; $("core-state").textContent = "连接中断"; throw error; }
   await refreshEvents();
@@ -136,10 +140,10 @@ async function loadTargets() {
 }
 async function loadSettings() {
   settings = await api("settings");
-  for (const [id, key, fallback] of [["subscription-url", "subscription_url", ""], ["extension-yaml", "extension_yaml", ""], ["outlet-source", "outlet_source", "subscription"], ["lan-host", "lan_host", ""], ["lan-port", "lan_port", 7890], ["lan-type", "lan_type", "http"], ["lan-user", "lan_username", ""], ["proxy-user", "proxy_username", ""], ["traffic-mode", "traffic_mode", "explicit"], ["core-mode", "core_mode", "rule"]]) $(id).value = settings[key] ?? fallback;
+  for (const [id, key, fallback] of [["outlet-source", "outlet_source", "subscription"], ["lan-host", "lan_host", ""], ["lan-port", "lan_port", 7890], ["lan-type", "lan_type", "http"], ["lan-user", "lan_username", ""], ["proxy-user", "proxy_username", ""], ["traffic-mode", "traffic_mode", "explicit"], ["core-mode", "core_mode", "native"]]) $(id).value = settings[key] ?? fallback;
   for (const kind of ["lan", "proxy"]) { $(`${kind}-password`).value = ""; $(`${kind}-password`).placeholder = settings[`has_${kind}_password`] ? "已保存，留空保留" : "可选"; $(`clear-${kind}-auth`).checked = false; }
   $("password-note").textContent = settings.has_lan_password ? "已保存密码，更换地址或用户名时需重新填写。" : "不需要认证时，用户名和密码均留空。";
-  $("subscription-interval").value = (settings.subscription_interval ?? 3600) / 60;
+
   $("share-enabled").checked = !!settings.share_enabled;
   for (const key of ["direct_domains", "proxy_domains", "direct_cidrs", "proxy_cidrs"]) $(key.replaceAll("_", "-")).value = (settings[key] || []).join("\n");
   $("default-action").value = settings.default_action || "proxy";
@@ -151,7 +155,7 @@ function credentials(data, kind) {
   else if ($(`${kind}-password`).value || !settings[`has_${kind}_password`]) data[`${kind}_password`] = $(`${kind}-password`).value;
 }
 function form(id, build, message) { $(id).addEventListener("submit", (event) => { event.preventDefault(); action(event.submitter, "校验并保存中…", async () => { await api("settings", "PUT", build()); await loadSettings(); await refreshStatus(); notice(message); }); }); }
-form("sources-form", () => { const data = {subscription_url: $("subscription-url").value.trim(), subscription_interval: Number($("subscription-interval").value) * 60, extension_yaml: $("extension-yaml").value, outlet_source: $("outlet-source").value, lan_host: $("lan-host").value.trim(), lan_port: Number($("lan-port").value), lan_type: $("lan-type").value}; if (!data.lan_host && data.subscription_url) data.outlet_source = "subscription"; credentials(data, "lan"); return data; }, "代理配置已拉取、校验并保存。");
+form("sources-form", () => { const data = {outlet_source: $("outlet-source").value, lan_host: $("lan-host").value.trim(), lan_port: Number($("lan-port").value), lan_type: $("lan-type").value};  credentials(data, "lan"); return data; }, "代理配置已拉取、校验并保存。");
 form("traffic-form", () => ({traffic_mode: $("traffic-mode").value, core_mode: $("core-mode").value, selected_apps: [...document.querySelectorAll('input[data-kind="app"]:checked')].map((input) => input.value), selected_integrations: [...document.querySelectorAll('input[data-kind="integration"]:checked')].map((input) => input.value)}), "流量模式已保存；配套集成最多约 10 秒同步。");
 form("sharing-form", () => { const data = {share_enabled: $("share-enabled").checked}; credentials(data, "proxy"); return data; }, "共享设置已保存。");
 form("rules-form", () => { const data = {default_action: $("default-action").value}; for (const key of ["direct_domains", "proxy_domains", "direct_cidrs", "proxy_cidrs"]) data[key] = [...new Set($(key.replaceAll("_", "-")).value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean))]; return data; }, "简易规则已保存。");
@@ -160,8 +164,8 @@ $("discover-form").addEventListener("submit", (event) => { event.preventDefault(
 $("refresh-status").addEventListener("click", (event) => action(event.currentTarget, "刷新中", async () => { await loadSettings(); await refreshStatus(); }));
 $("refresh-subscription").addEventListener("click", (event) => action(event.currentTarget, "更新中", async () => { await api("refresh", "POST", {}); await refreshStatus(); notice("订阅已重新拉取并加载。"); }));
 $("test-outlet").addEventListener("click", (event) => action(event.currentTarget, "测试中", async () => { $("test-result").textContent = "测试中…"; try { const result = await api("test", "POST", {}); $("test-result").textContent = `${result.latency_ms} ms`; notice(`出口收到 HTTP ${result.status} 响应。此测试验证代理出口，流量接入需另行核验。`); await refreshEvents(); } catch (error) { $("test-result").textContent = "未连通"; throw error; } }));
-$("diagnose-outlet").addEventListener("click", (event) => action(event.currentTarget, "诊断中", async () => { $("diagnostic-results").replaceChildren(element("p", "empty", "正在检查认证与 HTTPS…")); const result = await api("diagnose", "POST", {}); $("diagnostic-results").replaceChildren(); for (const check of result.checks) { const stage = check.stage === "upstream_connect" ? "上游代理握手" : "HTTPS 出口"; $("diagnostic-results").append(element("p", "field-note", `${stage} · ${check.target}：${check.ok ? `成功 · HTTP ${check.http_status}` : errors[check.code] || "失败"}`)); } await refreshEvents(); }));
+$("diagnose-outlet").addEventListener("click", (event) => action(event.currentTarget, "诊断中", async () => { $("diagnostic-results").replaceChildren(element("p", "empty", "正在检查认证与 HTTPS…")); const result = await api("diagnose", "POST", {}); $("diagnostic-results").replaceChildren(); for (const check of result.checks) { const stage = check.stage === "upstream_connect" ? "已保存共享上游握手" : `当前${result.active_outlet === "lan" ? "共享上游" : "订阅配置"} HTTPS 出口`; $("diagnostic-results").append(element("p", "field-note", `${stage} · ${check.target}：${check.ok ? `成功 · HTTP ${check.http_status}` : errors[check.code] || "失败"}`)); } await refreshEvents(); }));
 function navigation() { for (const link of document.querySelectorAll("nav a")) link.classList.toggle("active", link.hash === (location.hash || "#overview")); }
 window.addEventListener("hashchange", navigation); navigation();
-async function init() { const buttons = [...document.querySelectorAll("form button")]; buttons.forEach((b) => b.disabled = true); try { await loadSettings(); ready = true; await refreshStatus(); } catch (error) { notice(error.message, true); } finally { buttons.forEach((b) => b.disabled = !ready); } }
+async function init() { const buttons = [...document.querySelectorAll("form button")]; buttons.forEach((b) => b.disabled = true); try { await loadSettings(); await loadProfiles(); await loadPolicies(); ready = true; await refreshStatus(); } catch (error) { notice(error.message, true); } finally { buttons.forEach((b) => b.disabled = !ready); } }
 init(); setInterval(() => { if (ready && !document.hidden) refreshStatus().catch(() => {}); }, 15000);

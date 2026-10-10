@@ -81,6 +81,9 @@ class RealCoreTests(unittest.TestCase):
         self.fixture.store.sources["extension_yaml"] = (
             "proxy-groups:\n  - name: Broken\n    type: select"
         )
+        self.fixture.store.sources["subscriptions"][0]["extension_yaml"] = (
+            self.fixture.store.sources["extension_yaml"]
+        )
         from manager import atomic_json
 
         atomic_json(self.fixture.store.path, self.fixture.store.sources)

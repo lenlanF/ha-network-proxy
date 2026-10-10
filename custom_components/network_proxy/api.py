@@ -46,6 +46,9 @@ class Manager(Controller):
     async def refresh_subscription(self):
         return await self.request("POST", "/api/refresh", {})
 
+    async def set_enabled(self, enabled):
+        return await self.sources({"proxy_enabled": enabled})
+
     async def runtime(self):
         return await self.request("GET", "/integration/runtime")
 

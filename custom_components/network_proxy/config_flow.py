@@ -61,8 +61,12 @@ async def validate_controller(hass, values):
     await Controller(session, values["controller_url"], values["secret"]).status()
     manager = Manager(session, values["manager_url"], values["secret"])
     health = await manager.health()
-    if tuple(int(item) for item in health["version"].split(".")) < (0, 4, 0):
-        raise ValueError("Update the application to 0.4.0 first")
+    if (
+        health.get("application") != "network_proxy"
+        or "proxy_switch" not in health.get("features", [])
+        or tuple(int(item) for item in health["version"].split(".")) < (0, 5, 0)
+    ):
+        raise ValueError("Update the application to 0.5.0 first")
     await manager.status()
 
 

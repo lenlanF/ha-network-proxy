@@ -509,6 +509,16 @@ def main():
             assert "20227" not in run("ip", "rule", "show")
             store.update({"traffic_mode": "haos"})
             check(None, "tcp", "proxied")
+            store.update({"proxy_enabled": False})
+            check(None, "tcp", "direct")
+            check("np-a", "udp", "direct:fixture")
+            check("np-b", "dns", "198.51.100.55", "172.30.32.3")
+            assert not traffic.path.exists()
+            assert "20226" not in run("ip", "rule", "show")
+            assert not store.runtime_config["mixed-port"]
+            assert client.request("GET", "/version")["version"]
+            store.update({"proxy_enabled": True})
+            check(None, "tcp", "proxied")
             core.terminate()
             core.wait(timeout=10)
             traffic.cleanup()

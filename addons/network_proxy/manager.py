@@ -1,5 +1,6 @@
 """Source persistence, guarded Ingress UI and authenticated integration API."""
 
+import copy
 import errno
 import hmac
 import html
@@ -12,15 +13,32 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from generate import generate, source_choice
-from subscription import ConfigError, fetch_document, url_digest
+from profiles import (
+    activate,
+    active_profile,
+    normalize,
+    selected_document,
+    validate_profiles,
+)
+from subscription import (
+    MAX_BYTES,
+    ConfigError,
+    fetch_document,
+    parse_document,
+    url_digest,
+)
 
-VERSION = "0.4.3"
+VERSION = "0.5.0"
 SOURCE_DEFAULTS = {
+    "proxy_enabled": True,
+    "subscriptions": [],
+    "active_subscription": "",
     "subscription_url": "",
     "subscription_interval": 3600,
     "lan_host": "",
@@ -30,7 +48,7 @@ SOURCE_DEFAULTS = {
     "lan_password": "",
     "extension_yaml": "",
     "outlet_source": "",
-    "core_mode": "rule",
+    "core_mode": "native",
     "traffic_mode": "explicit",
     "selected_apps": [],
     "selected_integrations": [],
@@ -52,9 +70,11 @@ def validate_sources(sources):
     if not isinstance(sources, dict) or set(sources) - SOURCE_KEYS:
         raise ValueError("Invalid source fields")
     for key, value in sources.items():
-        if key == "share_enabled":
+        if key in ("share_enabled", "proxy_enabled"):
             if type(value) is not bool:
                 raise ValueError("Invalid sharing option")
+        elif key == "subscriptions":
+            validate_profiles(value)
         elif key in ("selected_apps", "selected_integrations"):
             if (
                 not isinstance(value, list)
@@ -118,17 +138,20 @@ class SettingsStore:
         fetcher=fetch_document,
         validator=None,
         traffic=None,
+        restore_selections=None,
     ):
         self.directory, self.options, self.reload_config = (
             Path(directory),
             options,
             reload_config,
         )
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.runtime_config = None
         self.recovery_error = ""
         self.path = self.directory / "sources.json"
         self.snapshot_path = self.directory / "subscription.json"
+        self.catalog_path = self.directory / "subscriptions.json"
+        self.restore_selections = restore_selections
         self.fetcher, self.validator, self.traffic = fetcher, validator, traffic
         self.snapshot = (
             json.loads(self.snapshot_path.read_text(encoding="utf-8"))
@@ -145,31 +168,44 @@ class SettingsStore:
         for key in ("proxy_username", "proxy_password"):
             if key not in self.sources and key in options:
                 self.sources[key] = options[key]
+        self.sources = normalize(self.sources)
+        self.snapshots = (
+            json.loads(self.catalog_path.read_text(encoding="utf-8"))
+            if self.catalog_path.exists()
+            else {}
+        )
+        identity = self.sources.get("active_subscription")
+        if identity:
+            self.snapshots.setdefault(identity, self.snapshot)
+            self.snapshot = self.snapshots[identity]
         validate_sources(self.sources)
 
     def config(self, sources, snapshot=None):
+        sources = normalize(sources)
         base = {
             key: value for key, value in self.options.items() if key not in SOURCE_KEYS
         }
         snapshot = self.snapshot if snapshot is None else snapshot
         url = sources.get("subscription_url", "")
         document = (
-            snapshot.get("document")
+            selected_document(active_profile(sources), snapshot)
             if snapshot.get("url_hash") == url_digest(url)
             else None
         )
         return generate(
             {**base, **sources},
-            bootstrap=not sources.get("subscription_url")
-            and not sources.get("lan_host"),
+            bootstrap=(
+                not sources.get("subscription_url") and not sources.get("lan_host")
+            )
+            or not sources.get("proxy_enabled", True),
             subscription_document=document,
         )
 
-    def update(self, changes, *, refresh=False):
+    def update(self, changes, *, refresh=False, refresh_ids=None, snapshots=None):
         if not isinstance(changes, dict) or set(changes) - SOURCE_KEYS:
             raise ValueError("Invalid source fields")
         with self.lock:
-            sources = {**self.sources, **changes}
+            sources = normalize({**self.sources, **changes}, changes)
             if self.recovery_error:
                 # A repair must not silently restore host routes or sharing.
                 sources.update(traffic_mode="explicit", share_enabled=False)
@@ -190,14 +226,64 @@ class SettingsStore:
             ):
                 sources.pop("proxy_password", None)
             validate_sources(sources)
-            snapshot = self.snapshot
+            catalog = copy.deepcopy(self.snapshots if snapshots is None else snapshots)
+            old_profiles = {
+                item["id"]: item for item in self.sources.get("subscriptions", [])
+            }
+            for profile in sources.get("subscriptions", []):
+                identity = profile["id"]
+                cached = catalog.get(identity, {})
+                previous = old_profiles.get(identity)
+                active = identity == sources.get("active_subscription")
+                fetch = (
+                    previous is None
+                    or previous.get("url") != profile["url"]
+                    or identity in (refresh_ids or [])
+                    or refresh
+                    and active
+                    or "subscription_url" in changes
+                    and active
+                    or active
+                    and source_choice(sources) == "subscription"
+                    and cached.get("url_hash") != url_digest(profile["url"])
+                )
+                if fetch:
+                    document = self.fetcher(profile["url"])
+                    cached = {
+                        **cached,
+                        "url_hash": url_digest(profile["url"]),
+                        "document": document,
+                        "fetched_at": int(time.time()),
+                        "original_yaml": getattr(document, "raw_yaml", ""),
+                    }
+                    catalog[identity] = cached
+                if fetch or profile != previous or snapshots is not None:
+                    candidate_sources = activate(sources, identity)
+                    candidate_sources.update(
+                        outlet_source="subscription",
+                        traffic_mode="explicit",
+                        share_enabled=False,
+                        proxy_enabled=True,
+                    )
+                    candidate = self.config(candidate_sources, cached)
+                    if self.validator:
+                        self.validator(candidate)
+            catalog = {
+                item["id"]: catalog.get(item["id"], {})
+                for item in sources.get("subscriptions", [])
+            }
+            snapshot = catalog.get(sources.get("active_subscription"), self.snapshot)
             url = sources.get("subscription_url", "")
-            if url and (
-                refresh
-                or "subscription_url" in changes
-                or (
-                    source_choice(sources) == "subscription"
-                    and snapshot.get("url_hash") != url_digest(url)
+            if (
+                not sources.get("subscriptions")
+                and url
+                and (
+                    refresh
+                    or "subscription_url" in changes
+                    or (
+                        source_choice(sources) == "subscription"
+                        and snapshot.get("url_hash") != url_digest(url)
+                    )
                 )
             ):
                 snapshot = {
@@ -236,22 +322,104 @@ class SettingsStore:
             )
             try:
                 self.reload_config(new_config)
+                if self.restore_selections:
+                    self.restore_selections(new_config, snapshot.get("selections", {}))
                 if self.traffic:
                     self.traffic.apply(new_plan)
                 atomic_json(self.snapshot_path, snapshot)
+                atomic_json(self.catalog_path, catalog)
                 atomic_json(self.path, sources)
                 atomic_json(self.directory / "config.json", new_config)
             except Exception:
                 atomic_json(self.snapshot_path, self.snapshot)
+                atomic_json(self.catalog_path, self.snapshots)
                 atomic_json(self.path, self.sources)
                 self.reload_config(old_config)
+                if self.restore_selections:
+                    self.restore_selections(
+                        old_config, self.snapshot.get("selections", {})
+                    )
                 if self.traffic:
                     self.traffic.apply(old_plan)
                 raise
             self.sources = dict(sources)
             self.snapshot = snapshot
+            self.snapshots = catalog
             self.runtime_config = new_config
             self.recovery_error = ""
+
+    def save_subscription(self, data):
+        if not isinstance(data, dict) or set(data) - {
+            "id",
+            "name",
+            "url",
+            "interval",
+            "extension_yaml",
+            "config_mode",
+        }:
+            raise ConfigError("invalid_profiles")
+        with self.lock:
+            profiles = copy.deepcopy(self.sources.get("subscriptions", []))
+            identity = data.get("id") or uuid.uuid4().hex[:16]
+            profile = next((item for item in profiles if item["id"] == identity), None)
+            if data.get("id") and profile is None:
+                raise ConfigError("profile_not_found")
+            if profile is None:
+                profile = {
+                    "id": identity,
+                    "interval": 3600,
+                    "extension_yaml": "",
+                    "config_mode": "native",
+                }
+                profiles.append(profile)
+            profile.update({key: value for key, value in data.items() if key != "id"})
+            self.update({"subscriptions": profiles})
+            return identity
+
+    def delete_subscription(self, identity):
+        with self.lock:
+            profiles = self.sources.get("subscriptions", [])
+            if not any(item["id"] == identity for item in profiles):
+                raise ConfigError("profile_not_found")
+            profiles = [item for item in profiles if item["id"] != identity]
+            changes = {"subscriptions": profiles}
+            if not profiles and source_choice(self.sources) == "subscription":
+                changes["proxy_enabled"] = False
+            self.update(changes)
+
+    def edit_subscription(self, identity, text, *, native=False):
+        with self.lock:
+            profiles = copy.deepcopy(self.sources.get("subscriptions", []))
+            profile = next((item for item in profiles if item["id"] == identity), None)
+            if profile is None:
+                raise ConfigError("profile_not_found")
+            catalog = copy.deepcopy(self.snapshots)
+            snapshot = catalog.get(identity)
+            if not snapshot or snapshot.get("url_hash") != url_digest(profile["url"]):
+                raise ConfigError("profile_not_ready")
+            if native:
+                profile["config_mode"] = "native"
+            else:
+                snapshot["edited_document"] = parse_document(text)
+                snapshot["edited_yaml"] = text
+                profile["config_mode"] = "edited"
+            self.update({"subscriptions": profiles}, snapshots=catalog)
+
+    def save_selection(self, group, name):
+        with self.lock:
+            if self.sources.get("active_subscription"):
+                snapshot = copy.deepcopy(self.snapshot)
+                catalog = copy.deepcopy(self.snapshots)
+                snapshot.setdefault("selections", {})[group] = name
+                catalog[self.sources["active_subscription"]] = snapshot
+                try:
+                    atomic_json(self.snapshot_path, snapshot)
+                    atomic_json(self.catalog_path, catalog)
+                except Exception:
+                    atomic_json(self.snapshot_path, self.snapshot)
+                    atomic_json(self.catalog_path, self.snapshots)
+                    raise
+                self.snapshot, self.snapshots = snapshot, catalog
 
     def prepare(self):
         """Restore the last private snapshot without contacting the subscription."""
@@ -278,6 +446,9 @@ class SettingsStore:
         atomic_json(self.path, self.sources)
         atomic_json(self.snapshot_path, snapshot)
         self.snapshot = snapshot
+        if self.sources.get("active_subscription"):
+            self.snapshots[self.sources["active_subscription"]] = snapshot
+        atomic_json(self.catalog_path, self.snapshots)
         self.runtime_config = config
 
     def prepare_or_recover(self):
@@ -288,6 +459,7 @@ class SettingsStore:
             config = generate(
                 {
                     "controller_secret": self.options["controller_secret"],
+                    "proxy_enabled": self.sources.get("proxy_enabled", True),
                     "proxy_username": self.sources.get("proxy_username", ""),
                     "proxy_password": self.sources.get("proxy_password", ""),
                 },
@@ -410,7 +582,7 @@ def handler_factory(
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 raise ValueError("Expected JSON")
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 262144:
+            if not 0 < size <= MAX_BYTES + 524288:
                 raise ValueError("Invalid size")
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
@@ -421,12 +593,27 @@ def handler_factory(
             if not self.authorized():
                 return
             path = self.request_path()
-            if ingress and path in ("/", "/index.html", "/app.js", "/style.css"):
+            if ingress and path in (
+                "/",
+                "/index.html",
+                "/app.js",
+                "/profiles.js",
+                "/style.css",
+            ):
                 self.asset(path)
                 return
             try:
                 if path == "/health":
-                    payload = {"version": VERSION}
+                    payload = {
+                        "version": VERSION,
+                        "application": "network_proxy",
+                        "features": [
+                            "proxy_switch",
+                            "profiles",
+                            "policies",
+                            "config_editor",
+                        ],
+                    }
                 elif service and path == "/api/status":
                     payload = service.status()
                 elif service and path == "/api/settings":
@@ -435,6 +622,15 @@ def handler_factory(
                     payload = {"events": service.event_snapshot()}
                 elif service and path == "/api/targets":
                     payload = service.targets()
+                elif service and path == "/api/subscriptions":
+                    payload = service.subscriptions()
+                elif service and path == "/api/subscription/config":
+                    query = parse_qs(urlsplit(self.path).query, max_num_fields=8)
+                    payload = service.subscription_config(
+                        query.get("id", [""])[0], query.get("view", ["editable"])[0]
+                    )
+                elif service and path == "/api/policies":
+                    payload = service.policies()
                 elif service and path == "/integration/runtime" and not ingress:
                     payload = service.runtime()
                 else:
@@ -451,6 +647,7 @@ def handler_factory(
             content_type = {
                 "index.html": "text/html; charset=utf-8",
                 "app.js": "text/javascript; charset=utf-8",
+                "profiles.js": "text/javascript; charset=utf-8",
                 "style.css": "text/css; charset=utf-8",
             }[name]
             content = (web_root / name).read_bytes()
@@ -486,6 +683,18 @@ def handler_factory(
                     payload = service.select(data.get("name"))
                 elif service and method == "POST" and path == "/api/refresh":
                     payload = service.refresh()
+                elif (
+                    service
+                    and method == "POST"
+                    and path.startswith("/api/subscription/")
+                ):
+                    payload = service.subscription_action(path.rsplit("/", 1)[-1], data)
+                elif service and method == "POST" and path == "/api/policy/select":
+                    payload = service.select_policy(
+                        data.get("group"),
+                        data.get("name"),
+                        automatic=data.get("automatic") is True,
+                    )
                 elif service and method == "POST" and path == "/api/discover":
                     payload = service.scan(data.get("cidr", ""))
                 elif service and method == "POST" and path == "/api/delay":
@@ -579,6 +788,7 @@ def main():
         client.reload,
         validator=lambda config: validate_mihomo(directory, config),
         traffic=traffic,
+        restore_selections=client.restore_selections,
     )
     store.prepare_or_recover()
     service = Service(store, client)
@@ -605,6 +815,9 @@ def main():
             try:
                 client.request("GET", "/version")
                 client.set_mode(store.runtime_config["mode"])
+                client.restore_selections(
+                    store.runtime_config, store.snapshot.get("selections", {})
+                )
                 if not store.recovery_error:
                     traffic.apply(traffic.plan(store.sources))
                 break

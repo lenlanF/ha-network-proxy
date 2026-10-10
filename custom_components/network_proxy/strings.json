@@ -4,7 +4,7 @@
     "step": {
       "controller": {
         "title": "连接 Network Proxy 插件",
-        "description": "先升级并启动 Network Proxy 0.4.0 应用。从网页复制三个内部地址，密钥填写应用选项中自己设置的 controller_secret。出口认证、订阅、流量模式与目标全部在网页管理。",
+        "description": "先升级并启动 Network Proxy 0.5.0 应用。从网页复制三个内部地址，密钥填写应用选项中自己设置的 controller_secret。出口认证、订阅、流量模式与目标全部在网页管理。",
         "data": {
           "controller_url": "控制 API 地址（更换地址需重新添加集成）",
           "manager_url": "插件管理地址",
@@ -14,7 +14,7 @@
       }
     },
     "error": {
-      "cannot_connect": "无法连接 Network Proxy 0.4.0 应用。请核对网页复制的内部地址和自己设置的控制密钥，并确认应用已启动。",
+      "cannot_connect": "无法连接 Network Proxy 0.5.0 应用。请核对网页复制的内部地址和自己设置的控制密钥，并确认应用已启动。",
       "invalid_network": "请输入最多 256 个地址的私有 IPv4 网段。",
       "apply_failed": "插件未能应用设置。检查源地址、认证信息及插件状态。",
       "missing_source": "请填写订阅 URL 或共享代理地址。",
@@ -46,11 +46,11 @@
       },
       "application": {
         "title": "应用管理",
-        "description": "打开 Network Proxy 应用的 Web 界面，统一管理订阅、YAML 扩展、LAN 来源、流量范围、应用/集成目标和共享。此集成提供出口实体、刷新和请求捕获计数，每 10 秒同步网页设置。"
+        "description": "打开 Network Proxy 应用的 Web 界面，统一管理订阅、YAML 扩展、LAN 来源、流量范围、应用/集成目标和共享。此集成提供代理开关、出口实体、刷新和请求捕获计数，每 10 秒同步网页设置。"
       }
     },
     "error": {
-      "cannot_connect": "无法连接 Network Proxy 0.4.0 应用。请核对网页复制的内部地址和自己设置的控制密钥，并确认应用已启动。",
+      "cannot_connect": "无法连接 Network Proxy 0.5.0 应用。请核对网页复制的内部地址和自己设置的控制密钥，并确认应用已启动。",
       "invalid_network": "请输入最多 256 个地址的私有 IPv4 网段。",
       "apply_failed": "插件未能应用设置。检查源地址、认证信息及插件状态。",
       "missing_source": "请填写订阅 URL 或共享代理地址。",

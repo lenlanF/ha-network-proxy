@@ -144,16 +144,27 @@ def validate_url(url):
         raise ConfigError("subscription_invalid") from error
 
 
+class SubscriptionDocument(dict):
+    """Keep the fetched text for the private editor without polluting core YAML."""
+
+
 def fetch_document(url):
     validate_url(url)
-    request = Request(url, headers={"User-Agent": "Clash.Meta/NetworkProxy-0.4.3"})
+    request = Request(url, headers={"User-Agent": "Clash.Meta/NetworkProxy-0.5.0"})
     try:
         with build_opener(ProxyHandler({})).open(request, timeout=15) as response:
             validate_url(response.url)
             body = response.read(MAX_BYTES + 1)
     except (OSError, ValueError) as error:
         raise ConfigError("subscription_fetch_failed") from error
-    return parse_document(body)
+    document = SubscriptionDocument(parse_document(body))
+    try:
+        document.raw_yaml = body.decode("utf-8-sig")
+    except UnicodeError:
+        document.raw_yaml = yaml.safe_dump(
+            dict(document), allow_unicode=True, sort_keys=False
+        )
+    return document
 
 
 def url_digest(url):
@@ -208,7 +219,7 @@ MANAGED = {
 }
 
 
-def compose(document, extension):
+def compose(document, extension, *, namespace=""):
     overlay = parse_document(extension, empty=True)
     if MANAGED & overlay.keys() or (
         isinstance(overlay.get("dns"), dict) and "listen" in overlay["dns"]
@@ -263,6 +274,10 @@ def compose(document, extension):
             if provider.get("type") == "http":
                 validate_url(provider.get("url", ""))
                 provider["path"] = (
-                    "./providers/" + kind + "-" + url_digest(name)[:16] + ".yaml"
+                    "./providers/"
+                    + kind
+                    + "-"
+                    + url_digest(namespace + ":" + name + ":" + provider["url"])[:16]
+                    + ".yaml"
                 )
     return result

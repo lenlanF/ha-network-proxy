@@ -29,7 +29,7 @@ def load_integration():
         "entry", default=None
     )
     modules["homeassistant.const"].Platform = SimpleNamespace(
-        SELECT="select", SENSOR="sensor", BUTTON="button"
+        SELECT="select", SENSOR="sensor", BUTTON="button", SWITCH="switch"
     )
     modules["homeassistant.helpers.aiohttp_client"].async_get_clientsession = (
         lambda hass: None
@@ -166,6 +166,19 @@ class AuxiliaryTests(unittest.IsolatedAsyncioTestCase):
         await runtime["coordinator"].update()
         self.assertEqual(runtime["policy"].targets, set())
         self.assertIs(ClientSession._request, original)
+
+    async def test_disabling_proxy_removes_hook_without_unloading_management(self):
+        original = ClientSession._request
+        await integration.async_setup_entry(self.hass, self.entry)
+        runtime = self.hass.data["network_proxy"]["owner"]
+        runtime["api"].settings["proxy_enabled"] = False
+        await runtime["coordinator"].update()
+        self.assertEqual(runtime["policy"].targets, set())
+        self.assertIs(ClientSession._request, original)
+        self.assertIn("owner", self.hass.data["network_proxy"])
+        runtime["api"].settings["proxy_enabled"] = True
+        await runtime["coordinator"].update()
+        self.assertEqual(runtime["policy"].targets, {"selected"})
 
     async def test_legacy_connection_migrates_without_copying_old_business_options(
         self,
