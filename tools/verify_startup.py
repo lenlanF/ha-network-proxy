@@ -112,8 +112,41 @@ def main():
         output = log.read()
         assert secret not in output and url not in output
         assert "startup recovery: core_validation_proxy_group" in output
+    # Restore an ASCII-escaped legacy snapshot with non-BMP names, then boot
+    # the actual manager and core. Persisted JSON is decoded by json.load;
+    # only the newly generated core file must avoid surrogate-pair escapes.
+    node, group = "🇭🇰香港节点🚀", "🌍订阅策略"
+    document["proxies"][0]["name"] = node
+    document["proxy-groups"] = [{"name": group, "type": "select", "proxies": [node]}]
+    document["rules"] = [f"MATCH,{group}"]
+    snapshot["document"] = document
+    sources.update(traffic_mode="explicit", share_enabled=False)
+    for name, value in (("sources.json", sources), ("subscription.json", snapshot)):
+        (directory / name).write_text(json.dumps(value), encoding="utf-8")
+    with (directory / "emoji-startup.log").open("w+") as log:
+        process = subprocess.Popen(["python", "/manager.py"], stdout=log, stderr=log)
+        try:
+            for _ in range(100):
+                assert process.poll() is None, "Manager exited during emoji startup"
+                try:
+                    status = request("/api/status")
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                raise AssertionError("Emoji subscription did not start")
+            assert status["configured"] and not status["recovery_error"], status
+            active = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+            assert active["proxies"][0]["name"] == node
+            assert active["proxy-groups"][0]["name"] == group
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
+        log.seek(0)
+        output = log.read()
+        assert secret not in output and url not in output
     print(
-        "STARTUP PASS: actual manager process; private settings/cache retained; reject recovery; no capture/sharing; guarded integration sync; manual repair; secret-free logs",
+        "STARTUP PASS: actual manager process; emoji subscription startup; private settings/cache retained; reject recovery; no capture/sharing; guarded integration sync; manual repair; secret-free logs",
         flush=True,
     )
 

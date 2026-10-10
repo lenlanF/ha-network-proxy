@@ -16,6 +16,59 @@ CORE = Path(
     CORE.exists(), "Place the official Mihomo binary in .tools to run real-core tests"
 )
 class RealCoreTests(unittest.TestCase):
+    def test_emoji_subscription_save_reload_and_persisted_restart(self):
+        from urllib.parse import quote
+
+        from manager import SettingsStore
+
+        node, group = "🇭🇰香港节点🚀", "🌍订阅策略"
+        self.fixture.subscription_document = {
+            "proxies": [
+                {
+                    "name": node,
+                    "type": "http",
+                    "server": "127.0.0.1",
+                    "port": self.fixture.http_port,
+                    "username": "lan-user",
+                    "password": "lan-password",
+                }
+            ],
+            "proxy-groups": [{"name": group, "type": "select", "proxies": [node]}],
+            "rules": [f"MATCH,{group}"],
+        }
+        self.fixture.store.update(
+            {
+                "subscription_url": f"http://127.0.0.1:{self.fixture.subscription_port}/subscription",
+                "outlet_source": "subscription",
+            }
+        )
+        self.assertEqual(
+            self.fixture.client.request("GET", "/proxies/" + quote(group, safe=""))[
+                "now"
+            ],
+            node,
+        )
+        self.assertEqual(
+            self.fixture.service.test("http://example.com/emoji-save")["status"], 200
+        )
+        restored = SettingsStore(
+            self.fixture.directory,
+            self.fixture.store.options,
+            self.fixture.store.reload_config,
+            validator=self.fixture.store.validator,
+        )
+        restored.prepare()
+        restored.reload_config(restored.runtime_config)
+        self.assertEqual(
+            self.fixture.client.request("GET", "/proxies/" + quote(group, safe=""))[
+                "now"
+            ],
+            node,
+        )
+        self.assertEqual(
+            self.fixture.service.test("http://example.com/emoji-restart")["status"], 200
+        )
+
     def test_saved_bad_group_recovers_with_reject_outlet_then_repairs(self):
         from subscription import ConfigError
 

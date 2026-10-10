@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from generate import generate, source_choice
 from subscription import ConfigError, fetch_document, url_digest
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 SOURCE_DEFAULTS = {
     "subscription_url": "",
     "subscription_interval": 3600,
@@ -101,7 +101,7 @@ def validate_sources(sources):
 def atomic_json(path, value):
     temporary = path.with_suffix(".tmp")
     with temporary.open("w", encoding="utf-8") as handle:
-        json.dump(value, handle)
+        json.dump(value, handle, ensure_ascii=False)
         handle.flush()
         os.fsync(handle.fileno())
     temporary.replace(path)
@@ -130,12 +130,12 @@ class SettingsStore:
         self.snapshot_path = self.directory / "subscription.json"
         self.fetcher, self.validator, self.traffic = fetcher, validator, traffic
         self.snapshot = (
-            json.loads(self.snapshot_path.read_text())
+            json.loads(self.snapshot_path.read_text(encoding="utf-8"))
             if self.snapshot_path.exists()
             else {}
         )
         self.sources = (
-            json.loads(self.path.read_text())
+            json.loads(self.path.read_text(encoding="utf-8"))
             if self.path.exists()
             else {key: options[key] for key in SOURCE_KEYS if key in options}
         )
@@ -327,9 +327,9 @@ def validation_code(output):
 
 def validate_mihomo(directory, config, binary="mihomo"):
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", dir=directory, delete=False
+        mode="w", encoding="utf-8", suffix=".json", dir=directory, delete=False
     ) as handle:
-        json.dump(config, handle)
+        json.dump(config, handle, ensure_ascii=False)
         path = Path(handle.name)
     try:
         with tempfile.TemporaryFile(dir=directory) as output:
@@ -512,7 +512,7 @@ def handler_factory(
 
                 code = failure_code(error)
                 if service:
-                    service.record("error", f"����ʧ�ܣ�{code}��δ��¼��֤��Ϣ")
+                    service.record("error", f"操作失败：{code}；未记录认证信息")
                 self.respond(503, {"error": code})
             except KeyError:
                 self.respond(503, {"error": "core_incompatible"})
@@ -528,7 +528,7 @@ def main():
 
     os.umask(0o077)
     directory = Path("/data")
-    options = json.loads((directory / "options.json").read_text())
+    options = json.loads((directory / "options.json").read_text(encoding="utf-8"))
     secret = options["controller_secret"]
     client = CoreClient(secret)
     traffic = Traffic(directory)
@@ -549,7 +549,7 @@ def main():
             flush=True,
         )
         service.record(
-            "error", "�������ñ��ܾ���" + store.recovery_error + "��������ҳ����������"
+            "error", "启动配置被拒绝：" + store.recovery_error + "；请在网页修正并保存"
         )
     core = subprocess.Popen(["mihomo", "-d", "/data", "-f", "/data/config.json"])
     servers = []
@@ -591,7 +591,7 @@ def main():
                                 traffic.apply(plan)
                         except (OSError, ValueError):
                             service.record(
-                                "error", "Ӧ�������ַͬ��ʧ�ܣ�����͸������״̬"
+                                "error", "应用网络地址同步失败，请检查透明代理状态"
                             )
                 time.sleep(15)
 

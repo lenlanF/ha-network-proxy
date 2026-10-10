@@ -42,8 +42,21 @@ def mapping(loader, node, deep=False):
 UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
 
 
+def unique_json_mapping(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ConfigError("invalid_yaml")
+        result[key] = value
+    return result
+
+
 def parse_document(body, *, empty=False):
-    if len(body.encode() if isinstance(body, str) else body) > MAX_BYTES:
+    try:
+        size = len(body.encode() if isinstance(body, str) else body)
+    except UnicodeError as error:
+        raise ConfigError("invalid_yaml") from error
+    if size > MAX_BYTES:
         raise ConfigError("config_too_large")
     try:
         loader = UniqueLoader(body)
@@ -73,6 +86,14 @@ def parse_document(body, *, empty=False):
             loader.dispose()
     except (yaml.YAMLError, UnicodeError, RecursionError) as error:
         raise ConfigError("invalid_yaml") from error
+    # JSON surrogate pairs represent one Unicode character. The YAML loader
+    # leaves them as separate surrogate code points, which cannot be UTF-8.
+    try:
+        doc = json.loads(body, object_pairs_hook=unique_json_mapping)
+    except json.JSONDecodeError:
+        pass
+    except (UnicodeError, RecursionError) as error:
+        raise ConfigError("invalid_yaml") from error
     if doc is None and empty:
         return {}
     if not isinstance(doc, dict):
@@ -87,11 +108,20 @@ def parse_document(body, *, empty=False):
             for key, child in value.items():
                 if not isinstance(key, str):
                     raise ConfigError("invalid_yaml")
+                try:
+                    key.encode("utf-8")
+                except UnicodeError as error:
+                    raise ConfigError("invalid_yaml") from error
                 walk(child, (*ancestors, id(value)), depth + 1)
         elif isinstance(value, list):
             for child in value:
                 walk(child, (*ancestors, id(value)), depth + 1)
-        elif value is not None and type(value) not in (str, int, float, bool):
+        elif isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeError as error:
+                raise ConfigError("invalid_yaml") from error
+        elif value is not None and type(value) not in (int, float, bool):
             raise ConfigError("invalid_yaml")
 
     walk(doc)
@@ -116,7 +146,7 @@ def validate_url(url):
 
 def fetch_document(url):
     validate_url(url)
-    request = Request(url, headers={"User-Agent": "Clash.Meta/NetworkProxy-0.4.1"})
+    request = Request(url, headers={"User-Agent": "Clash.Meta/NetworkProxy-0.4.2"})
     try:
         with build_opener(ProxyHandler({})).open(request, timeout=15) as response:
             validate_url(response.url)

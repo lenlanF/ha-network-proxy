@@ -246,5 +246,8 @@ def generate(options, *, bootstrap=False, subscription_document=None):
 
 
 if __name__ == "__main__":
-    options = json.loads(Path("/data/options.json").read_text())
-    Path("/data/config.json").write_text(json.dumps(generate(options, bootstrap=True)))
+    options = json.loads(Path("/data/options.json").read_text(encoding="utf-8"))
+    Path("/data/config.json").write_text(
+        json.dumps(generate(options, bootstrap=True), ensure_ascii=False),
+        encoding="utf-8",
+    )

@@ -59,6 +59,7 @@ class Fixture:
         self.targets = []
         self.process = None
         self.log = None
+        self.subscription_document = None
         self.exe = Path(
             os.environ.get(
                 "MIHOMO_BINARY", ROOT / ".tools" / "mihomo-windows-amd64-v1.exe"
@@ -245,7 +246,8 @@ class Fixture:
                     for name in ("Fixture-A", "Fixture-B")
                 ]
                 body = json.dumps(
-                    {
+                    fixture.subscription_document
+                    or {
                         "proxies": proxies,
                         "proxy-groups": [
                             {

@@ -70,7 +70,11 @@ class CoreClient:
             return json.load(response) if response.status != 204 else None
 
     def reload(self, config):
-        self.request("PUT", "/configs?force=true", {"payload": json.dumps(config)})
+        self.request(
+            "PUT",
+            "/configs?force=true",
+            {"payload": json.dumps(config, ensure_ascii=False)},
+        )
         self.set_mode(config["mode"])
 
     def set_mode(self, mode):
@@ -86,7 +90,7 @@ class Service:
         self.integrations = []
         self.report_time = 0
         self.last_subscription_attempt = 0
-        self.record("info", "������������������")
+        self.record("info", "代理管理服务已启动")
 
     def record(self, level, message):
         with self.events_lock:
@@ -122,12 +126,12 @@ class Service:
         outlets = [
             {
                 "name": "subscription",
-                "label": "��������",
+                "label": "订阅配置",
                 "ready": bool(sources.get("subscription_url") and snapshot),
             },
             {
                 "name": "lan",
-                "label": "��������������",
+                "label": "局域网共享代理",
                 "ready": bool(sources.get("lan_host")),
             },
         ]
@@ -173,23 +177,23 @@ class Service:
             ):
                 raise ConfigError("integration_unavailable")
         self.store.update(settings)
-        self.record("info", "������У�顢���沢�ȼ���")
+        self.record("info", "配置已校验、保存并热加载")
         return {"saved": True}
 
     def select(self, name):
-        aliases = {"��������": "subscription", "��������������": "lan"}
+        aliases = {"订阅配置": "subscription", "局域网共享代理": "lan"}
         name = aliases.get(name, name) if isinstance(name, str) else None
         if name not in ("subscription", "lan"):
             raise ValueError("Unknown outlet")
         self.store.update({"outlet_source": name})
-        self.record("info", "���л�������Դ")
+        self.record("info", "已切换代理来源")
         return {"selected": name}
 
     def refresh(self):
         if not self.store.sources.get("subscription_url"):
             raise ValueError("No subscription configured")
         self.store.update({}, refresh=True)
-        self.record("info", "������������ȡ��У�鲢����")
+        self.record("info", "订阅已重新拉取、校验并加载")
         return {"refreshed": True}
 
     def auto_refresh(self):
@@ -212,12 +216,12 @@ class Service:
             self.refresh()
         except (OSError, ValueError, http.client.HTTPException):
             self.record(
-                "warning", "�����Զ�����ʧ�ܣ����������ϴο������ã�����Ӻ�����"
+                "warning", "订阅自动更新失败，继续保留上次可用配置；五分钟后重试"
             )
 
     def scan(self, cidr):
         results = asyncio.run(discover(cidr))
-        self.record("info", f"����������ɨ����ɣ����� {len(results)} �����")
+        self.record("info", f"局域网代理扫描完成，发现 {len(results)} 个入口")
         return {"proxies": results}
 
     def delay(self, name):
@@ -257,7 +261,7 @@ class Service:
             status = response.status
             response.read(1024)
         latency = round((time.monotonic() - started) * 1000)
-        self.record("info", "����������ͨ�Բ��Գɹ�")
+        self.record("info", "代理出口连通性测试成功")
         return {
             "status": status,
             "latency_ms": latency,
@@ -367,7 +371,7 @@ class Service:
                 connection.close()
             results.append(result)
             if result["code"] == "proxy_auth_required":
-                self.record("warning", "���δ�����֤��Ϸ��� HTTP 407")
+                self.record("warning", "上游代理认证诊断返回 HTTP 407")
                 return {"checks": results, "scope": "proxy_outlet_only"}
         for target in ("https://www.gstatic.com/generate_204", "https://example.com/"):
             try:
@@ -391,5 +395,5 @@ class Service:
                         "code": failure_code(error),
                     }
                 )
-        self.record("info", "���������ɣ�����������̶�Ŀ�꼰�������")
+        self.record("info", "代理诊断完成，结果仅包含固定目标及错误分类")
         return {"checks": results, "scope": "proxy_outlet_only"}

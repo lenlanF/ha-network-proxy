@@ -23,7 +23,7 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m ruff check addons custom_components tests tools
       - name: Build native preview without publishing
-        run: docker build --build-arg BUILD_VERSION=0.4.1 --build-arg BUILD_ARCH=${{ matrix.arch }} -t network-proxy:test addons/network_proxy
+        run: docker build --build-arg BUILD_VERSION=0.4.2 --build-arg BUILD_ARCH=${{ matrix.arch }} -t network-proxy:test addons/network_proxy
       - name: Verify real core and isolated network
         shell: bash
         run: |
