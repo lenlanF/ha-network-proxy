@@ -1,7 +1,7 @@
 {
   "domain": "network_proxy",
   "name": "Network Proxy",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "config_flow": true,
   "integration_type": "service",
   "iot_class": "local_polling",

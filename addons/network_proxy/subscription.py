@@ -146,7 +146,7 @@ def validate_url(url):
 
 def fetch_document(url):
     validate_url(url)
-    request = Request(url, headers={"User-Agent": "Clash.Meta/NetworkProxy-0.4.2"})
+    request = Request(url, headers={"User-Agent": "Clash.Meta/NetworkProxy-0.4.3"})
     try:
         with build_opener(ProxyHandler({})).open(request, timeout=15) as response:
             validate_url(response.url)

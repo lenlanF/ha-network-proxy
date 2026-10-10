@@ -226,7 +226,14 @@ def generate(options, *, bootstrap=False, subscription_document=None):
             "auto-detect-interface": True,
             "dns-hijack": ["any:53", "tcp://any:53"],
             "route-exclude-address": LOCAL_RANGES,
-            "exclude-src-port": [7890, 8099, 9090, 9091, 8123, 1053],
+            "exclude-src-port": [
+                7890,
+                options.get("_ingress_port", 8099),
+                9090,
+                9091,
+                8123,
+                1053,
+            ],
             "iproute2-table-index": 20226,
             "iproute2-rule-index": 20226,
         }
