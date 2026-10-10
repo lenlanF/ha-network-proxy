@@ -5,6 +5,7 @@ let settings = {}, targets = {}, ready = false;
 const scopes = {explicit: "显式出口", haos: "整台 HAOS", selected: "部分应用 / 集成"};
 const errors = {
   invalid_settings: "设置无效，请检查地址、端口、认证和目标。更换上游地址或用户名时需重新填写密码。",
+  upstream_loop: "不能把本应用的出口设置成自己的上游。",
   invalid_yaml: "YAML 格式无效、存在重复键或内容过于复杂。",
   subscription_invalid: "订阅必须是有效的 Clash / Mihomo 配置。",
   subscription_empty: "订阅没有节点或代理提供者。",
@@ -75,7 +76,7 @@ async function refreshStatus() {
     $("core-state").textContent = status.configured ? "内核运行中" : "待配置代理源";
     $("refresh-subscription").disabled = !status.has_subscription;
     $("traffic-state").textContent = scopes[status.traffic_scope];
-    $("traffic-detail").textContent = status.traffic_scope === "haos" ? "TUN 接入 TCP / UDP" : status.traffic_scope === "selected" ? `${(status.traffic.ips || []).length} 个运行中的应用接入` : "设备或客户端主动设置代理";
+    $("traffic-detail").textContent = status.traffic_scope === "haos" ? (status.traffic.active ? "TUN 接入 TCP / UDP" : "透明代理尚未就绪") : status.traffic_scope === "selected" ? `${(status.traffic.ips || []).length} 个运行中的应用接入` : "设备或客户端主动设置代理";
     $("scope-note").textContent = status.traffic_scope === "selected" ? "集成请求由配套集成接入。勾选集成并不表示其所有网络客户端均已覆盖。" : status.traffic_scope === "haos" ? "整台 HAOS 的出站连接接入代理；管理入口与私有地址直连。" : "当前仅提供代理出口，未透明接入 HAOS 出站流量。";
     $("integration-state").textContent = status.integration_connected ? "配套集成已连接，每 10 秒同步网页设置。" : "配套集成尚未连接。添加后可在本网页选择集成实例。";
     drawOutlets(status);

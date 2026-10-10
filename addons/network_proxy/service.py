@@ -150,7 +150,7 @@ class Service:
                 "rules": len(config.get("rules", [])),
                 "groups": max(0, len(config.get("proxy-groups", [])) - 1),
             },
-            "traffic": dict(self.store.traffic.state) if self.store.traffic else {},
+            "traffic": self.store.traffic.status() if self.store.traffic else {},
             "integration_connected": time.monotonic() - self.report_time < 45,
         }
 

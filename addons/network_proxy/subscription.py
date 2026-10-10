@@ -163,6 +163,12 @@ def compose(document, extension):
     if not isinstance(before, list) or not isinstance(after, list):
         raise ConfigError("invalid_yaml")
     result = deep_merge(base, overlay)
+    for proxy in (
+        result.get("proxies", []) if isinstance(result.get("proxies"), list) else []
+    ):
+        if isinstance(proxy, dict):
+            proxy.pop("routing-mark", None)
+            proxy.pop("interface-name", None)
     if any(
         key in result and not isinstance(result[key], dict)
         for key in ("dns", "profile", "sniffer")

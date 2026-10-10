@@ -75,6 +75,7 @@ jobs:
           ruff check addons custom_components tests tools
           python -m compileall -q addons custom_components
           MIHOMO_BINARY="$PWD/.tools/mihomo" python -m unittest discover -s tests -v
+          docker run --rm --privileged --network=none -e NP_ISOLATED_TEST=1 -v "$PWD:/repo:ro" -w /repo --entrypoint python "$IMAGE" tools/verify_traffic.py
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io

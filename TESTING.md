@@ -1,24 +1,24 @@
-# 测试与验证范围
+# Verification
 
-安装开发依赖后运行 `python -m unittest discover -s tests -v` 和
-`ruff check addons custom_components tests tools`。
+Local Windows checks:
 
-26 项测试覆盖配置生成、输入验证、凭据保留、热加载回滚、管理请求鉴权、
-实验路由的上下文与覆盖限制，以及真实 Mihomo 的 HTTP、HTTPS CONNECT、
-认证 SOCKS5、节点订阅刷新和切换。
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\ruff.exe check addons custom_components tests tools
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe tools/verify_ui.py
+```
 
-真实协议测试需要 Mihomo v1.19.12。设置 `MIHOMO_BINARY` 为二进制的绝对路径；
-Windows 默认读取 `.tools/mihomo-windows-amd64-v1.exe`。
-缺少二进制时真实内核测试会跳过，跳过不能视为通过。
+Put the official Mihomo v1.19.12 executable in `.tools/mihomo-windows-amd64-v1.exe`, or set `MIHOMO_BINARY`. Real-core tests use only local fixtures: authenticated HTTP CONNECT, verified TLS, authenticated SOCKS5, complete subscription policy, YAML extension, invalid-group rollback and global outlet selection. Browser QA checks Ingress prefixes, source switching, credential retention, YAML saves, sharing, address copying, mode controls and desktop/mobile overflow. Local screenshots contain only synthetic test settings.
 
-GitHub Actions 分别在原生 amd64 和 aarch64 Linux 上构建容器，提取容器内核，
-执行测试及容器内的证书、模块导入检查；通过后才发布对应镜像。
-两种架构都通过后生成预览 Release、源码包、离线镜像包和 SHA256 校验文件。
-具体运行结果以仓库 Actions 为准。
+The PR workflow builds native amd64/aarch64 images without publishing. It runs all tests and the following inside a disposable Linux container with no external network:
 
-浏览器检查：先运行 `python -m playwright install chromium`，再运行
-`python tools/verify_ui.py`。该检查使用真实后端和本地测试代理，检查桌面、
-手机布局与交互；局域网发现的正向结果使用测试替身。
+```sh
+docker run --rm --privileged --network=none \
+  -e NP_ISOLATED_TEST=1 -v "$PWD:/repo:ro" -w /repo \
+  --entrypoint python network-proxy:test tools/verify_traffic.py
+```
 
-这些测试不证明 HA Core 的所有请求被代理。真实 HA OS 安装、Ingress、
-应用持久化和辅助集成生命周期需要另外实机检查。
+**Never run this script on HAOS or another live host.** The privilege belongs only to the throwaway CI container. The fixture creates a synthetic WAN server and two application namespaces, simulates bridge forwarding and NAT, and checks selected versus unselected apps, whole-host/apps TCP/UDP/DNS, IPv6, private bypass, direct/global modes, LAN sharing, and cleanup. DNS responses differ between the baseline server and Mihomo's upstream, proving actual redirection. Origin responses identify loopback proxy connections versus direct WAN connections.
+
+Production release jobs must also pass this isolation test before publishing images. A CI success is evidence for the synthetic Linux topology, not a claim that a particular HAOS installation has been validated. Live acceptance should check Core and representative apps, management access, local devices, selected integration capture counters, UDP-capable upstream behavior and recovery after stop/restart. Use a maintenance window; no live routing switch is implied by a source build or PR.

@@ -34,11 +34,11 @@ UPSTREAM = "192.168.200.2"
 
 
 def run(*args):
-    return (
-        subprocess.run(list(args), check=True, capture_output=True, timeout=20)
-        .stdout.decode()
-        .strip()
-    )
+    result = subprocess.run(list(args), capture_output=True, timeout=20)
+    if result.returncode:
+        print(result.stderr.decode(), flush=True)
+        result.check_returncode()
+    return result.stdout.decode().strip()
 
 
 def proxied(address):
@@ -178,14 +178,23 @@ def serve_upstream():
             except (OSError, EOFError):
                 return
 
-    def echo():
-        udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-        udp.bind(("::", 18333))
+    def echo(address):
+        udp = socket.socket(
+            socket.AF_INET6 if ":" in address else socket.AF_INET, socket.SOCK_DGRAM
+        )
+        udp.bind((address, 18333))
         while True:
             data, peer = udp.recvfrom(65535)
             udp.sendto((b"proxied:" if proxied(peer[0]) else b"direct:") + data, peer)
 
-    for function, args in ((dns_server, (UPSTREAM, TARGET)), (echo, ())):
+    # Bind each origin address explicitly so UDP replies retain the destination
+    # address and match the simulated Docker NAT conntrack tuple.
+    for function, args in (
+        (dns_server, (UPSTREAM, TARGET)),
+        (echo, (TARGET,)),
+        (echo, ("127.0.0.1",)),
+        (echo, (TARGET6,)),
+    ):
         threading.Thread(target=function, args=args, daemon=True).start()
     for server in (
         Origin6(("::", 18080), Origin),

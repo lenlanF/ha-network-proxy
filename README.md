@@ -1,79 +1,65 @@
-# HA Network Proxy — 0.3.2 开发预览
+# HA Network Proxy — 0.4.0 开发预览
 
-Home Assistant OS 代理应用，配一个可选的轻量集成。订阅和局域网共享代理的管理放在应用中；集成提供实体、自动化及有明确覆盖限制的实验接入。
+Home Assistant OS 应用 + 配套集成。应用运行 Mihomo，网页统一管理代理；配套集成提供出口实体、订阅刷新和按集成请求接入。
 
 ## 功能
 
-- HA Ingress 管理页面，无需在网页再次填写密钥。
-- Clash/Mihomo YAML 节点订阅，定时更新和手动刷新。
-- LAN HTTP / SOCKS5 共享代理及用户名密码认证。
-- 用户触发的私有 IPv4 网段发现，验证代理握手后选择保存。
-- 节点切换、逐节点测速、出口连通性测试。
-- 域名和 IPv4/IPv6 CIDR 分流，私有地址优先直连。
-- 设置热加载、持久化、失败回滚，以及不包含凭据的管理操作记录。
-- 可选 HA 实体与按集成实例选择的实验性 aiohttp 路由。
+- 保存订阅时立即拉取 Clash / Mihomo YAML 或 JSON 完整配置，保留策略组、规则、DNS 与提供者。只有节点的订阅自动生成选择组。
+- 网页 YAML 扩展：对象递归合并，列表整体替换；`prepend-rules` 放在订阅规则前，`append-rules` 放在 MATCH 前。
+- 出口只选择“订阅配置”或“局域网共享代理”。实际节点由订阅策略组决定。
+- 按需发现局域网 HTTP / SOCKS5 入口，包含 OpenClash 常用 7893。
+- 分别设置接入范围（显式 / 整台 HAOS / 部分应用与集成）和内核模式（规则 / 全局 / 直连）。
+- 两种来源均可向局域网分享 HTTP / SOCKS5 出口，可设置独立出口认证。
+- 应用选项只保留 `controller_secret`；订阅、扩展、上游认证、目标和共享都在网页配置。
 
-## 安装
+## 范围与边界
 
-在 HA 应用商店的“仓库”中添加：
+| 接入范围 | 覆盖 |
+| --- | --- |
+| 显式代理出口 | 主动指定此代理的客户端；不透明接入 HAOS |
+| 整台 HAOS | 通过主机 TUN 接入 Core 与应用的公网 TCP / UDP；包含 IPv6；私有地址保留直连 |
+| 部分应用 | 按 Supervisor bridge 容器 IPv4 来源接入 TCP / UDP；host-network 应用无法单独隔离 |
+| 部分集成 | 带 HA config-entry 上下文的 aiohttp 请求；HTTPX、requests、原始套接字和丢失上下文的请求不覆盖 |
 
-`https://github.com/lenlanF/ha-network-proxy`
+按集成功能仍使用私有 aiohttp 钩子，需观察 HA 捕获计数核验覆盖。UDP 还取决于上游能力：HTTP 上游不承载 UDP。透明代理需要 `/dev/net/tun`、NET_ADMIN 和 NET_RAW；不需要 Docker API、主机 PID、Supervisor manager/admin 权限。
 
-刷新后安装 Network Proxy。镜像由 GitHub Actions 构建并发布到 GHCR，
-HA OS 直接下载对应架构的版本镜像，无需在 HA 上构建。
-首次发布后需要将 GHCR 包设为 Public；HA 必须能够访问 GitHub 和 GHCR。
+0.4.0 仍是开发预览。Linux 网络验证结果以对应提交的 GitHub Actions 为准，隔离环境通过不等于实机 HAOS 验收。
 
-也可以使用 Release 中的源码包进行本地安装，目录结构：
+## 安装与配置
 
-```text
-addons/network_proxy/                 → HA /addons/network_proxy/
-custom_components/network_proxy/      → HA /config/custom_components/network_proxy/（可选）
+1. HA → 设置 → 应用 → 应用商店 → 仓库，添加 `https://github.com/lenlanF/ha-network-proxy`。
+2. 安装 Network Proxy，选项里设置自己生成的至少 16 字符随机 `controller_secret`。
+3. 启动并打开 Web 界面，保存订阅或选择发现的 LAN 代理，完成出口测试。
+4. 将 `custom_components/network_proxy` 复制到 HA 的 `/config/custom_components/`，在合适时间重启 Core，添加 Network Proxy 集成。
+5. 从网页“连接配套 HA 集成”复制三个内部地址，密钥填写步骤 2 自己设置的值。无需在集成连接表单重复填写出口用户名/密码。
+6. 在网页选择流量范围、内核模式和目标。配套集成每 10 秒同步网页设置，不会自动重载其他集成。
+
+内部地址是 `http://127.0.0.1:9090`（控制）、`:9091`（管理）和 `:7890`（出口），Core 与应用使用主机网络。控制和管理 API 只监听回环。共享开启时，其他设备用 HA 局域网 IP 的 7890 端口。
+
+首次订阅保存执行“拉取 → 合并 → 内核校验 → 加载 → 持久化”。失败保留原配置和快照；启动优先读取私有快照。提供者仍按订阅自己的 interval 更新；完整订阅通过“更新订阅”重新拉取。
+
+## YAML 示例
+
+假设订阅有策略组 `自动选择`：
+
+```yaml
+prepend-rules:
+  - DOMAIN-SUFFIX,example.cn,DIRECT
+append-rules:
+  - DOMAIN-SUFFIX,example.com,自动选择
+dns:
+  nameserver:
+    - system
 ```
 
-1. 从上述仓库安装；或复制应用目录，刷新本地应用列表并安装。两种方式都拉取 GHCR 预构建镜像。
-2. 设置至少 16 字符的随机 `controller_secret`，启动应用。
-3. 点击“打开 Web 界面”，按需启用侧边栏入口。
-4. 添加订阅或共享代理，保存，选择节点，再测试出口。
-5. 需要实体和自动化时，安装可选集成并重启 HA。
+规则中的策略组必须存在。端口、TUN、控制 API、认证等由应用管理，扩展不能覆盖。仅支持 HTTP / inline 提供者；文件路径限定在应用数据目录。
 
-本地安装的集成默认使用内部主机名 `local-network-proxy`，端口为控制 9090、管理 9091、出口 7890。从仓库安装时须改用对应的内部名称。管理与控制端口默认不映射到宿主 LAN。
+## 从 0.3.x 升级
 
-完整安装、配置和排错步骤见 [应用说明](addons/network_proxy/DOCS.md)。
+保留 `/data/sources.json` 中的上游、认证和简易规则。旧 Supervisor 选项的业务字段一次迁移到网页存储；选项最终仅有密钥。默认仍是显式模式，升级不会自动接管整台 HAOS。网页保留“已有的简易分流规则”编辑区。
 
-## 重要范围
+应用改为 host-network，需检查端口 7890、8099、9090、9091、1053 没有冲突。辅助集成也要升级至 0.4.0；旧连接地址需更新为网页提供的回环地址。备份配置，并在可接受的维护时间升级和重启。
 
-**应用提供代理出口，不自动接管 HA Core 的网络请求。** 域名/IP 分流只作用于已经经过出口的连接。未实现宿主 TUN 透明转发。
+## 构建
 
-集成的实验性按集成路由默认关闭，依赖 aiohttp 私有请求钩子和 HA 配置条目任务上下文。仅捕获符合条件的 aiohttp 请求，不覆盖 HTTPX、requests、原始 TCP/UDP 或无上下文请求。选择集成实例不能保证其全部流量都被覆盖；捕获计数也不能证明最终公网出口。
-
-普通订阅以 Clash/Mihomo YAML 节点格式为测试范围，不提供其他格式转换。局域网发现为用户触发的扫描，并非后台 mDNS 广播发现；免认证 SOCKS5 与 HTTP CONNECT 入口可探测，认证 SOCKS5 及非标准端口可手动设置。
-
-## 验证
-
-详见 [TESTING.md](TESTING.md)。已进行本地 Python 测试、真实 Mihomo 协议转发与订阅测试，以及桌面/手机浏览器交互检查。Linux 镜像验证结果见仓库 Actions。Supervisor Ingress 和 HA 集成生命周期仍需实机确认。
-
-管理页面截图使用本地测试代理和测试订阅节点，不是用户真实 HA 的运行截图。
-
-## 开发
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\ruff.exe check addons custom_components tests tools
-```
-
-真实内核测试需要官方 Mihomo v1.19.12 的 Windows amd64-v1 二进制放在 `.tools/mihomo-windows-amd64-v1.exe`。没有该二进制时三项真实内核测试会跳过，不代表它们通过。浏览器检查另外需要 `python -m playwright install chromium`，随后运行 `python tools/verify_ui.py`。浏览器正向发现结果使用测试替身，不扫描真实 LAN。
-
-打包：`python tools/package.py`。输出仅包含源码和文档，不含配置凭据、虚拟环境或内核二进制。
-
-## 自定义集成显式接入
-
-```python
-from custom_components.network_proxy.proxy import async_request
-async with async_request(hass, proxy_entry_id, "GET", "https://example.com") as response:
-    response.raise_for_status()
-    data = await response.text()
-```
-
-[架构评估](ARCHITECTURE.md) · [HA 应用](https://developers.home-assistant.io/docs/apps/) · [HA 内部通信](https://developers.home-assistant.io/docs/apps/communication/) · [Mihomo](https://github.com/MetaCubeX/mihomo/tree/v1.19.12)
+GitHub Actions 原生构建 amd64 / aarch64；HAOS 安装 GHCR 预构建镜像。PR 测试不发布镜像；发布流程通过真实协议和隔离 Linux 网络测试后才推送镜像。详情见 [TESTING.md](TESTING.md)。

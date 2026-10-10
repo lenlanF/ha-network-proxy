@@ -117,6 +117,11 @@ class Traffic:
 
     def plan(self, settings):
         scope = settings.get("traffic_mode", "explicit")
+        if (
+            settings.get("lan_host") in self.addresses
+            and settings.get("lan_port", 7890) == 7890
+        ):
+            raise ConfigError("upstream_loop")
         selected = settings.get("selected_apps", []) if scope == "selected" else []
         if (scope == "haos" or selected) and not self.capability():
             raise ConfigError("tun_unavailable")
@@ -139,6 +144,14 @@ class Traffic:
             "scope": scope,
             "ips": sorted(ips),
             "tun": scope == "haos" or bool(selected),
+        }
+
+    def status(self):
+        return {
+            **self.state,
+            "active": bool(
+                self.state.get("tun") and Path("/sys/class/net/" + DEVICE).exists()
+            ),
         }
 
     def command(self, *args, required=True):

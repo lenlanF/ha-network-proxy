@@ -19,6 +19,7 @@ def main():
     try:
         fixture.start()
         from traffic import Traffic
+
         fixture.store.traffic = Traffic(fixture.directory)
         # Loopback allowance exists only in this test server; production is
         # restricted to the Supervisor Ingress peer at 172.30.32.2.
