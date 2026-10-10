@@ -219,6 +219,17 @@ class Traffic:
         self.state = plan
         self.path.write_text(json.dumps(plan))
         try:
+            if plan["scope"] == "haos":
+                for binary in ("iptables", "ip6tables"):
+                    self.chain(binary, "filter", "FORWARD", "NP_FORWARD")
+                    # Whole-host capture includes every container forwarded into
+                    # the TUN; these rules never grant unrelated WAN forwarding.
+                    self.command(
+                        binary, "-w", "-A", "NP_FORWARD", "-o", DEVICE, "-j", "ACCEPT"
+                    )
+                    self.command(
+                        binary, "-w", "-A", "NP_FORWARD", "-i", DEVICE, "-j", "ACCEPT"
+                    )
             if plan["scope"] == "selected":
                 self.command(
                     "ip", "route", "add", "default", "dev", DEVICE, "table", TABLE

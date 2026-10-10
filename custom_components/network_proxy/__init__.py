@@ -2,6 +2,7 @@
 
 import logging
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from aiohttp import BasicAuth, ClientError
 from homeassistant.config_entries import current_entry
@@ -16,6 +17,32 @@ from .routing import Policy, Router
 _LOGGER = logging.getLogger(__name__)
 _ROUTER = Router(current_entry.get)
 PLATFORMS = [Platform.SELECT, Platform.SENSOR, Platform.BUTTON]
+
+
+async def async_migrate_entry(hass, entry):
+    if entry.version > 2:
+        return False
+    if entry.version < 2:
+        data = {**entry.data, **entry.options}
+        for key in ("controller_url", "manager_url", "proxy_url"):
+            parsed = urlsplit(data[key])
+            host = parsed.hostname or ""
+            if host == "local-network-proxy" or host.endswith(
+                ("-network-proxy", "_network_proxy")
+            ):
+                data[key] = f"http://127.0.0.1:{parsed.port}"
+        data = {
+            key: data[key]
+            for key in ("controller_url", "manager_url", "proxy_url", "secret")
+        }
+        hass.config_entries.async_update_entry(
+            entry,
+            data=data,
+            options={},
+            version=2,
+            unique_id=data["controller_url"].rstrip("/"),
+        )
+    return True
 
 
 async def async_setup_entry(hass, entry):

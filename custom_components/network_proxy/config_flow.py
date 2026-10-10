@@ -67,7 +67,7 @@ async def validate_controller(hass, values):
 
 
 class ProxyFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    VERSION = 2
 
     @staticmethod
     @callback
