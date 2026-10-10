@@ -13,12 +13,10 @@ from .api import Controller, Manager
 from .const import DOMAIN
 
 CONNECTION_DEFAULTS = {
-    "controller_url": "http://local-network-proxy:9090",
-    "manager_url": "http://local-network-proxy:9091",
+    "controller_url": "http://127.0.0.1:9090",
+    "manager_url": "http://127.0.0.1:9091",
     "secret": "",
-    "proxy_url": "http://local-network-proxy:7890",
-    "proxy_username": "",
-    "proxy_password": "",
+    "proxy_url": "http://127.0.0.1:7890",
 }
 
 
@@ -32,7 +30,7 @@ def connection_schema(values):
     return vol.Schema(
         {
             vol.Required(key, default=values.get(key, default)): password_selector()
-            if key in ("secret", "proxy_password")
+            if key == "secret"
             else str
             for key, default in CONNECTION_DEFAULTS.items()
         }
@@ -55,19 +53,21 @@ def validate_connection(values):
         _ = parsed.port
     if len(values["secret"]) < 16:
         raise ValueError("Invalid secret")
-    if bool(values.get("proxy_username")) != bool(values.get("proxy_password")):
-        raise ValueError("Set both proxy credentials")
 
 
 async def validate_controller(hass, values):
     validate_connection(values)
     session = async_get_clientsession(hass)
     await Controller(session, values["controller_url"], values["secret"]).status()
-    await Manager(session, values["manager_url"], values["secret"]).health()
+    manager = Manager(session, values["manager_url"], values["secret"])
+    health = await manager.health()
+    if tuple(int(item) for item in health["version"].split(".")) < (0, 4, 0):
+        raise ValueError("Update the application to 0.4.0 first")
+    await manager.status()
 
 
 class ProxyFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    VERSION = 2
 
     @staticmethod
     @callback
@@ -107,7 +107,7 @@ class ProxyOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["application", "routing", "connection"],
+            menu_options=["application", "connection"],
         )
 
     async def async_step_connection(self, user_input=None):
@@ -133,60 +133,3 @@ class ProxyOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return await self.async_step_init()
         return self.async_show_form(step_id="application", data_schema=vol.Schema({}))
-
-    async def async_step_routing(self, user_input=None):
-        entries = {
-            entry.entry_id: f"{entry.title} ({entry.domain})"
-            for entry in self.hass.config_entries.async_entries()
-            if entry.domain != DOMAIN and not entry.disabled_by
-        }
-        errors = {}
-        if user_input is not None:
-            targets = set(user_input.get("targets", []))
-            if not targets <= entries.keys():
-                errors["base"] = "invalid_targets"
-            else:
-                for entry in self.hass.config_entries.async_entries(DOMAIN):
-                    if (
-                        entry.entry_id != self.config_entry.entry_id
-                        and entry.options.get("experimental_routing")
-                        and targets & set(entry.options.get("targets", []))
-                    ):
-                        errors["base"] = "target_conflict"
-            if not errors:
-                return self.save(user_input)
-        options = {**self.config_entry.options, **(user_input or {})}
-        return self.async_show_form(
-            step_id="routing",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        "experimental_routing",
-                        default=options.get("experimental_routing", False),
-                    ): bool,
-                    vol.Required(
-                        "targets",
-                        default=[
-                            item
-                            for item in options.get("targets", [])
-                            if item in entries
-                        ],
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            multiple=True,
-                            options=[
-                                {"value": key, "label": label}
-                                for key, label in entries.items()
-                            ],
-                        )
-                    ),
-                    vol.Required(
-                        "bypass_local", default=options.get("bypass_local", True)
-                    ): bool,
-                    vol.Required(
-                        "reload_targets", default=options.get("reload_targets", False)
-                    ): bool,
-                }
-            ),
-            errors=errors,
-        )

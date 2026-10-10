@@ -1,38 +1,19 @@
-# 架构评估
+# Architecture
 
-目标环境为 Home Assistant OS。用户希望通过 HA 界面管理订阅、发现和使用局域网共享代理，并在界面选择希望代理的集成。
+The host-network application owns the proxy runtime. Supervisor options supply only the controller secret. The private `/data/sources.json` stores webpage settings; `/data/subscription.json` stores a URL hash, fetch timestamp and complete subscription document. Permissions default to 0600. Nothing from these private files is packaged in the repository or release bundle.
 
-## 推荐：应用为主体，轻量集成为辅助
+Subscription saves fetch bounded YAML/JSON, apply recursive mapping overrides and replacement lists, then validate a generated configuration with the actual Mihomo binary. Runtime fields are managed locally, and provider cache paths cannot escape the data directory. A failed fetch, merge, validation or routing update restores previous settings and runtime; errors returned to the webpage use fixed codes rather than exception text containing tokens.
 
-HA 应用（原 add-on）运行独立代理内核及管理服务，拥有持久化目录、独立生命周期和日志。Mihomo 的长驻进程、节点订阅和代理连接应放在应用中。HA 集成负责实体、动作和接入 HA 特定集成的适配。
+The source selector chooses subscription policy or LAN upstream. Subscription rules reference the original groups, and the application adds one reserved outlet group for global mode and simple overrides. Global mode explicitly selects this managed group instead of Mihomo's default DIRECT. No flat subscription node list is exposed by the manager.
 
-正式版的订阅、共享代理发现、节点、分流、连通性测试和日志页面应由应用提供，通过 HA Ingress 打开。它仍在 HA 界面内，不要求用户操作终端。轻量集成可提供配置入口，但应复用应用 API，避免管理逻辑重复实现。
+The manager listens on loopback 9091 and the controller on loopback 9090. Ingress 8099 requires the Supervisor peer 172.30.32.2; JSON mutations require a request marker. The integration runtime endpoint containing local outlet credentials is bearer-authenticated and unavailable through Ingress. The public settings endpoint redacts both upstream and outlet passwords.
 
-## 各方案
+Whole-HAOS mode uses Mihomo TUN auto-route with a dedicated route index and outbound socket mark. Auto-redirect remains disabled; forwarding into and out of the TUN uses application-owned chains. Private destinations bypass capture. Application-owned DNS chains redirect host and Supervisor bridge DNS into Mihomo, excluding marked upstream DNS sockets. The DNS listener is restricted to loopback and the Supervisor bridge by firewall rules. IPv6 is enabled for whole-host capture.
 
-| 方案 | 优点 | 问题 | 判断 |
-|---|---|---|---|
-| 纯集成 | HA 配置流、实体和自动化方便 | 内核进程生命周期及系统网络配置不适合置于 Core 中；通用按集成代理没有官方接口 | 不推荐作为主体 |
-| 纯应用 | 内核隔离、独立更新和管理页面；适合订阅、共享代理及目标地址分流 | 无法天然判断 HA Core 内哪个集成发出了连接；实体需另行接入 | 代理产品主体的首选 |
-| 应用加轻量集成 | 内核职责清晰，同时保留 HA 实体和自动化；可以逐步扩展受支持的集成适配 | 两个组件需要维护 API 兼容性 | 推荐 |
+Partial application mode uses TUN without automatic host routing. Each selected bridge application's current IPv4 address gets an exact source rule in table 20227; private routes throw back to the main table. Named FORWARD chains allow selected container traffic across the TUN despite Docker's forwarding policy. DNS redirection is limited to selected source addresses. App addresses are reconciled every 15 seconds. Host-network applications share Core's source network identity and cannot be selected individually.
 
-## 流量接入必须分开评估
+Routing resources are journaled before modification and cleaned on switches, failed setup, shutdown and startup. Cleanup deletes only the application's named chains, exact source rules and dedicated table; it never flushes the host's general route or firewall tables. Mihomo owns its auto-route resources.
 
-应用提供代理出口，不等于 HA Core 自动通过该出口联网。支持显式代理的客户端可直接接入；其他客户端需要适配，或经过另外验证的主机网络透明转发方案。后者涉及宿主网络权限、回环避让、DNS、IPv6、局域网直连和停机路由恢复，当前代码没有实现，不应宣称支持全 HA 代理。
+The companion integration reports config-entry names/domains to the manager and polls centralized routing settings every 10 seconds. Selected config-entry-context aiohttp requests use the loopback HTTP outlet and its current credentials. Explicit proxy arguments and local destinations are preserved. Failed proxied requests do not silently retry direct. Unloading restores the hook. This does not capture other HTTP clients or tasks which lost their entry context.
 
-代理内核能可靠依据目标域名/IP/端口分流，但同一 HA Core 进程中的集成并不是独立系统进程，不能通过普通进程规则逐个区分。集成名称到域名的映射也有共享域名和动态地址问题，不能标成严格的按集成隔离。
-
-当前原型的实验性按集成路由只捕获带配置条目任务上下文的 aiohttp 请求。不包括 HTTPX、requests、原始 TCP/UDP，以及丢失上下文的请求。实验默认关闭；请求计数仅代表钩子捕获及收到响应，不代表集成所有流量或最终出口均已验证。正式版不能依赖它作为唯一接入机制。
-
-## 当前实现与待完成项
-
-当前已有应用内核封装、Ingress 管理页面、源管理 API、用户触发的网段发现、节点测速与选择、分流规则、出口测试，以及可选 HA 实体和实验路由原型。
-
-HTTP/HTTPS CONNECT、认证 SOCKS5 及订阅转发已完成本地真实 Mihomo 验证。尚待 HA OS 容器实机测试、真实 Supervisor Ingress 验证和 HA 流量接入兼容性验证。后台广播发现和通用客户端适配仍未完成。当前交付为开发预览。
-
-官方依据：
-
-- https://developers.home-assistant.io/docs/apps/
-- https://developers.home-assistant.io/docs/apps/configuration/
-- https://github.com/home-assistant/core/blob/dev/homeassistant/config_entries.py
-- https://github.com/home-assistant/core/blob/dev/homeassistant/helpers/aiohttp_client.py
+Supervisor reads use the default role: `/supervisor/info`, per-app `/addons/{slug}/info` and `/network/info`. Only whitelisted names, state, host-network flags and addresses are retained. No app options, Docker API, host PID namespace or Supervisor manager/admin privileges are needed.

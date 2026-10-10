@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.3.2"
+VERSION = "0.4.0"
 
 
 def main():
@@ -35,12 +35,14 @@ def main():
     )
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
         for path in sorted(files):
-            bundle.write(
-                path,
-                (
-                    Path(f"ha-network-proxy-{VERSION}") / path.relative_to(ROOT)
-                ).as_posix(),
-            )
+            name = (
+                Path(f"ha-network-proxy-{VERSION}") / path.relative_to(ROOT)
+            ).as_posix()
+            # Linux entrypoints must not inherit a Windows checkout's CRLF.
+            if path.suffix in (".py", ".sh", ".json", ".md", ".yaml", ".yml", ".txt"):
+                bundle.writestr(name, path.read_text(encoding="utf-8").encode("utf-8"))
+            else:
+                bundle.write(path, name)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_suffix(".zip.sha256").write_text(
         f"{digest}  {archive.name}\n", encoding="ascii"

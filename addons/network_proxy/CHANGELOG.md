@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+## 0.4.0 — 开发预览
+
+- 保存订阅立即拉取完整配置，保留配套策略组、规则及 DNS；网页支持 YAML 扩展和失败回滚。
+- 出口按订阅配置 / LAN 共享代理选择；增加规则、全局和直连模式。
+- 网页统一管理全部业务设置，应用选项仅有控制密钥，内部连接地址可复制。
+- 增加整台 HAOS TUN、部分 bridge 应用 IPv4 选择、配套集成目标同步，以及可选 LAN 共享和独立出口认证。
+- 双架构 CI 增加隔离 Linux TCP/UDP/DNS/IPv6 与路由恢复验证；实机验收另行进行。
+
+- Make local outlet username/password optional in the HA connection and options forms; unauthenticated outlets can be configured without dummy credentials.
+
+- 局域网发现增加 OpenClash 混合代理端口 7893；仍通过代理协议握手验证入口。
+
 ## 0.3.2 — 开发预览
 
 - 出口测试返回安全的错误分类，区分认证、超时、DNS、连接和 TLS 错误，不回传原始异常或凭据。

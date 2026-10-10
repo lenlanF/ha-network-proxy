@@ -16,6 +16,8 @@ from urllib.parse import quote, urlsplit
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 from discovery import discover
+from generate import ROOT_GROUP, source_choice
+from subscription import ConfigError
 
 
 def failure_code(error):
@@ -69,6 +71,11 @@ class CoreClient:
 
     def reload(self, config):
         self.request("PUT", "/configs?force=true", {"payload": json.dumps(config)})
+        self.set_mode(config["mode"])
+
+    def set_mode(self, mode):
+        if mode == "global":
+            self.request("PUT", "/proxies/GLOBAL", {"name": ROOT_GROUP})
 
 
 class Service:
@@ -76,6 +83,9 @@ class Service:
         self.store, self.core, self.proxy_url = store, core, proxy_url
         self.events = deque(maxlen=100)
         self.events_lock = threading.Lock()
+        self.integrations = []
+        self.report_time = 0
+        self.last_subscription_attempt = 0
         self.record("info", "代理管理服务已启动")
 
     def record(self, level, message):
@@ -96,57 +106,109 @@ class Service:
         with self.store.lock:
             data = dict(self.store.sources)
             data["has_lan_password"] = bool(data.pop("lan_password", ""))
+            data["has_proxy_password"] = bool(data.pop("proxy_password", ""))
+            data["outlet_source"] = source_choice(data)
             return data
 
     def status(self):
         version = self.core.request("GET", "/version")
-        proxies = self.core.request("GET", "/proxies")["proxies"]
-        group = proxies["PROXY"]
-        nodes = []
-        for name in group["all"]:
-            proxy = proxies.get(name, {})
-            history = proxy.get("history", [])
-            nodes.append(
-                {
-                    "name": name,
-                    "type": proxy.get("type", "unknown"),
-                    "delay": history[-1].get("delay") if history else None,
-                }
-            )
+        self.core.request("GET", "/proxies")["proxies"][ROOT_GROUP]
+        with self.store.lock:
+            sources = dict(self.store.sources)
+            config = self.store.config(sources)
+            snapshot = dict(self.store.snapshot)
+        current = source_choice(sources)
+        outlets = [
+            {
+                "name": "subscription",
+                "label": "订阅配置",
+                "ready": bool(sources.get("subscription_url") and snapshot),
+            },
+            {
+                "name": "lan",
+                "label": "局域网共享代理",
+                "ready": bool(sources.get("lan_host")),
+            },
+        ]
         return {
             "version": version["version"],
-            "current": group.get("now"),
-            "nodes": nodes,
-            "has_subscription": bool(self.store.sources.get("subscription_url")),
-            "has_lan": bool(self.store.sources.get("lan_host")),
-            "configured": bool(
-                self.store.sources.get("subscription_url")
-                or self.store.sources.get("lan_host")
+            "current": current,
+            "outlets": outlets,
+            "options": [item["label"] for item in outlets if item["ready"]],
+            "current_label": next(
+                item["label"] for item in outlets if item["name"] == current
             ),
-            "traffic_scope": "explicit_proxy_only",
+            "has_subscription": bool(sources.get("subscription_url")),
+            "has_lan": bool(sources.get("lan_host")),
+            "configured": any(
+                item["name"] == current and item["ready"] for item in outlets
+            ),
+            "traffic_scope": sources.get("traffic_mode", "explicit"),
+            "core_mode": sources.get("core_mode", "rule"),
+            "share_enabled": sources.get("share_enabled", False),
+            "subscription": {
+                "fetched_at": snapshot.get("fetched_at"),
+                "rules": len(config.get("rules", [])),
+                "groups": max(0, len(config.get("proxy-groups", [])) - 1),
+            },
+            "traffic": self.store.traffic.status() if self.store.traffic else {},
+            "integration_connected": time.monotonic() - self.report_time < 45,
         }
 
     def update(self, settings):
+        if settings.get("traffic_mode") == "selected" or (
+            self.store.sources.get("traffic_mode") == "selected"
+            and "selected_integrations" in settings
+        ):
+            chosen = settings.get(
+                "selected_integrations",
+                self.store.sources.get("selected_integrations", []),
+            )
+            known = {item["id"] for item in self.integrations if not item["disabled"]}
+            if chosen and (
+                time.monotonic() - self.report_time >= 45 or not set(chosen) <= known
+            ):
+                raise ConfigError("integration_unavailable")
         self.store.update(settings)
-        self.record("info", "代理源与分流设置已保存并热加载")
+        self.record("info", "配置已校验、保存并热加载")
         return {"saved": True}
 
     def select(self, name):
-        with self.store.lock:
-            group = self.core.request("GET", "/proxies/PROXY")
-            if not isinstance(name, str) or name not in group["all"]:
-                raise ValueError("Unknown node")
-            self.core.request("PUT", "/proxies/PROXY", {"name": name})
-        self.record("info", "已切换代理节点")
+        aliases = {"订阅配置": "subscription", "局域网共享代理": "lan"}
+        name = aliases.get(name, name) if isinstance(name, str) else None
+        if name not in ("subscription", "lan"):
+            raise ValueError("Unknown outlet")
+        self.store.update({"outlet_source": name})
+        self.record("info", "已切换代理来源")
         return {"selected": name}
 
     def refresh(self):
-        with self.store.lock:
-            if not self.store.sources.get("subscription_url"):
-                raise ValueError("No subscription configured")
-            self.core.request("PUT", "/providers/proxies/subscription")
-        self.record("info", "已触发订阅更新")
+        if not self.store.sources.get("subscription_url"):
+            raise ValueError("No subscription configured")
+        self.store.update({}, refresh=True)
+        self.record("info", "订阅已重新拉取、校验并加载")
         return {"refreshed": True}
+
+    def auto_refresh(self):
+        with self.store.lock:
+            url = self.store.sources.get("subscription_url")
+            interval = self.store.sources.get("subscription_interval", 3600)
+            fetched = self.store.snapshot.get("fetched_at", 0)
+        now = time.time()
+        if (
+            not url
+            or not interval
+            or now - fetched < interval
+            or now - self.last_subscription_attempt < 300
+        ):
+            return
+        self.last_subscription_attempt = now
+        try:
+            self.refresh()
+        except (OSError, ValueError, http.client.HTTPException):
+            self.record(
+                "warning", "订阅自动更新失败，继续保留上次可用配置；五分钟后重试"
+            )
 
     def scan(self, cidr):
         results = asyncio.run(discover(cidr))
@@ -154,12 +216,13 @@ class Service:
         return {"proxies": results}
 
     def delay(self, name):
-        group = self.core.request("GET", "/proxies/PROXY")
-        if not isinstance(name, str) or name not in group["all"] or name == "REJECT":
-            raise ValueError("Unknown node")
+        if name not in ("subscription", "lan") or name != source_choice(
+            self.store.sources
+        ):
+            raise ValueError("Unknown active outlet")
         path = (
             "/proxies/"
-            + quote(name, safe="")
+            + quote(ROOT_GROUP, safe="")
             + "/delay?timeout=5000&url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"
         )
         return self.core.request("GET", path)
@@ -170,8 +233,8 @@ class Service:
         # Test target is fixed by the server, never supplied by browser input.
         parsed = urlsplit(self.proxy_url)
         user, password = (
-            self.store.options.get("proxy_username"),
-            self.store.options.get("proxy_password"),
+            self.store.sources.get("proxy_username"),
+            self.store.sources.get("proxy_password"),
         )
         proxy = f"{parsed.scheme}://{parsed.netloc}"
         opener = build_opener(
@@ -194,6 +257,58 @@ class Service:
             "url": test_url,
             "scope": "proxy_outlet_only",
         }
+
+    def targets(self):
+        traffic = self.store.traffic
+        if traffic and not traffic.apps:
+            traffic.refresh_inventory()
+        return {
+            "apps": traffic.apps if traffic else [],
+            "integrations": list(self.integrations),
+            "integration_connected": time.monotonic() - self.report_time < 45,
+            "tun_available": traffic.capability() if traffic else False,
+            "supervisor_available": traffic.inventory_ok if traffic else False,
+            "addresses": {
+                "controller_url": "http://127.0.0.1:9090",
+                "manager_url": "http://127.0.0.1:9091",
+                "proxy_url": "http://127.0.0.1:7890",
+            },
+            "lan_addresses": traffic.addresses if traffic else [],
+        }
+
+    def report(self, data):
+        entries = data.get("integrations", [])
+        if not isinstance(entries, list) or len(entries) > 256:
+            raise ValueError("Invalid integration report")
+        filtered = []
+        for item in entries:
+            if (
+                not isinstance(item, dict)
+                or any(
+                    not isinstance(item.get(key), str) or len(item[key]) > 256
+                    for key in ("id", "name", "domain")
+                )
+                or type(item.get("disabled")) is not bool
+            ):
+                raise ValueError("Invalid integration report")
+            filtered.append(
+                {key: item[key] for key in ("id", "name", "domain", "disabled")}
+            )
+        self.integrations = filtered
+        self.report_time = time.monotonic()
+        return {"reported": True}
+
+    def runtime(self):
+        # Loopback bearer API only. Never route this payload through Ingress.
+        with self.store.lock:
+            source = self.store.sources
+            return {
+                "traffic_mode": source.get("traffic_mode", "explicit"),
+                "targets": source.get("selected_integrations", []),
+                "proxy_url": self.proxy_url,
+                "proxy_username": source.get("proxy_username", ""),
+                "proxy_password": source.get("proxy_password", ""),
+            }
 
     def diagnose(self):
         """Check saved HTTP authentication and two fixed HTTPS targets.
@@ -224,15 +339,17 @@ class Service:
                     "stage": "upstream_connect",
                     "target": "example.com:443",
                     "ok": status == 200,
-                    "code": "ok" if status == 200 else (
-                        "proxy_auth_required" if status == 407 else "http_error"
-                    ),
+                    "code": "ok"
+                    if status == 200
+                    else ("proxy_auth_required" if status == 407 else "http_error"),
                     "http_status": status,
                 }
             except (OSError, http.client.HTTPException) as error:
                 result = {
-                    "stage": "upstream_connect", "target": "example.com:443",
-                    "ok": False, "code": failure_code(error),
+                    "stage": "upstream_connect",
+                    "target": "example.com:443",
+                    "ok": False,
+                    "code": failure_code(error),
                 }
             finally:
                 if response is not None:
@@ -245,15 +362,24 @@ class Service:
         for target in ("https://www.gstatic.com/generate_204", "https://example.com/"):
             try:
                 result = self.test(target)
-                results.append({
-                    "stage": "outlet_https", "target": target,
-                    "ok": True, "code": "ok", "http_status": result["status"],
-                    "latency_ms": result["latency_ms"],
-                })
+                results.append(
+                    {
+                        "stage": "outlet_https",
+                        "target": target,
+                        "ok": True,
+                        "code": "ok",
+                        "http_status": result["status"],
+                        "latency_ms": result["latency_ms"],
+                    }
+                )
             except (OSError, http.client.HTTPException) as error:
-                results.append({
-                    "stage": "outlet_https", "target": target,
-                    "ok": False, "code": failure_code(error),
-                })
+                results.append(
+                    {
+                        "stage": "outlet_https",
+                        "target": target,
+                        "ok": False,
+                        "code": failure_code(error),
+                    }
+                )
         self.record("info", "代理诊断完成，结果仅包含固定目标及错误分类")
         return {"checks": results, "scope": "proxy_outlet_only"}
