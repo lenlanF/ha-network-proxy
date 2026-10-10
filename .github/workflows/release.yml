@@ -110,6 +110,7 @@ jobs:
           python-version: '3.13'
       - uses: actions/download-artifact@v4
         with:
+          pattern: image-*
           path: release
           merge-multiple: true
       - name: Package source and publish preview release
@@ -124,3 +125,4 @@ jobs:
             gh release create "v$VERSION" --target "$GITHUB_SHA" --prerelease --title "Network Proxy $VERSION preview" --notes-file RELEASE_NOTES.md
           fi
           gh release upload "v$VERSION" release/* --clobber
+
