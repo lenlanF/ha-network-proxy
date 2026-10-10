@@ -1,9 +1,13 @@
+import io
 import json
+import socket
+import ssl
 import tempfile
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
-from urllib.error import HTTPError
+from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from test_core import load
@@ -184,3 +188,51 @@ class ApplicationTests(unittest.TestCase):
                     "lan_password": "",
                 }
             )
+
+    def test_test_endpoint_classifies_failure_without_leaking_credentials(self):
+        failures = [
+            (HTTPError("https://token-secret@example.test", 407, "secret-lan-password", {}, io.BytesIO()), "proxy_auth_required"),
+            (URLError(ssl.SSLCertVerificationError("secret-lan-password")), "tls_certificate_error"),
+            (URLError(TimeoutError("secret-lan-password")), "network_timeout"),
+            (socket.gaierror("secret-lan-password"), "dns_error"),
+            (ConnectionRefusedError("secret-lan-password"), "connection_refused"),
+        ]
+        for failure, code in failures:
+            with self.subTest(code=code), patch.object(self.service, "test", side_effect=failure):
+                with self.assertRaises(HTTPError) as error:
+                    self.request("/api/test", "POST", {})
+                body = error.exception.read().decode()
+                self.assertEqual(json.loads(body), {"error": code})
+                self.assertNotIn("secret-lan-password", body)
+                self.assertNotIn("token-secret", body)
+        self.assertNotIn("secret-lan-password", json.dumps(self.service.event_snapshot()))
+
+    def test_diagnostic_auth_rejection_is_redacted_and_skips_outlet(self):
+        with patch.object(service_module, "HTTPConnection") as connection:
+            connection.return_value.getresponse.return_value.status = 407
+            with patch.object(self.service, "test") as outlet:
+                with self.request("/api/diagnose", "POST", {}) as response:
+                    body = response.read().decode()
+                outlet.assert_not_called()
+            result = json.loads(body)
+            self.assertEqual(result["checks"][0]["code"], "proxy_auth_required")
+            self.assertEqual(result["checks"][0]["http_status"], 407)
+            self.assertFalse(result["checks"][0]["ok"])
+            self.assertNotIn("secret-lan-password", body)
+            connection.return_value.close.assert_called_once()
+
+    def test_diagnostic_targets_fixed_and_distinguishes_certificate_failure(self):
+        with patch.object(service_module, "HTTPConnection") as connection:
+            connection.return_value.getresponse.return_value.status = 200
+            with patch.object(self.service, "test", side_effect=[
+                URLError(ssl.SSLCertVerificationError("token-secret")),
+                {"status": 200, "latency_ms": 12},
+            ]) as outlet:
+                with self.request("/api/diagnose", "POST", {"url": "http://private.test/", "password": "attacker"}) as response:
+                    result = json.load(response)
+                self.assertEqual([call.args[0] for call in outlet.call_args_list], [
+                    "https://www.gstatic.com/generate_204", "https://example.com/",
+                ])
+            self.assertEqual(result["checks"][1]["code"], "tls_certificate_error")
+            self.assertTrue(result["checks"][2]["ok"])
+            self.assertNotIn("token-secret", json.dumps(result))

@@ -2,6 +2,7 @@
 
 import hmac
 import html
+import http.client
 import json
 import os
 import re
@@ -14,7 +15,7 @@ from urllib.parse import urlsplit
 
 from generate import generate
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 SOURCE_DEFAULTS = {
     "subscription_url": "",
     "lan_host": "",
@@ -261,15 +262,20 @@ def handler_factory(
                     payload = service.delay(data.get("name"))
                 elif service and method == "POST" and path == "/api/test":
                     payload = service.test()
+                elif service and method == "POST" and path == "/api/diagnose":
+                    payload = service.diagnose()
                 else:
                     self.respond(404, {"error": "not_found"})
                     return
             except (ValueError, TypeError, UnicodeDecodeError):
                 self.respond(400, {"error": "invalid_settings"})
-            except OSError:
+            except (OSError, http.client.HTTPException) as error:
+                from service import failure_code
+
+                code = failure_code(error)
                 if service:
-                    service.record("error", "操作失败，请检查代理源和应用运行状态")
-                self.respond(503, {"error": "operation_failed"})
+                    service.record("error", f"操作失败：{code}；未记录认证信息")
+                self.respond(503, {"error": code})
             except KeyError:
                 self.respond(503, {"error": "core_incompatible"})
             else:

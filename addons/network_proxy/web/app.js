@@ -7,6 +7,15 @@ let ready = false;
 const errors = {
   invalid_settings: "设置无效。请检查代理地址、端口、域名和网段；修改认证代理地址后需重新填写密码。",
   operation_failed: "操作失败，请检查代理源、认证信息和应用运行状态。",
+  proxy_auth_required: "代理认证被拒绝（HTTP 407）。请核对共享代理的用户名和密码。",
+  http_error: "代理或测试目标返回 HTTP 错误，请运行连接诊断。",
+  tls_certificate_error: "HTTPS 证书验证失败。请检查上游代理或证书信任配置。",
+  tls_error: "HTTPS 握手失败，请检查上游代理的 TLS 连接。",
+  network_timeout: "连接超时。请检查上游节点和目标站点的连通性。",
+  dns_error: "无法解析代理或目标主机名。",
+  connection_refused: "代理连接被拒绝，请检查监听地址、端口和 LAN 共享。",
+  connection_closed: "代理或目标提前关闭了连接。",
+  network_error: "网络请求失败，请运行连接诊断并查看应用日志。",
   core_unavailable: "暂时无法连接 Mihomo 内核，请检查应用日志。",
   core_incompatible: "内核响应不兼容，请检查应用版本。",
   ingress_only: "请通过 Home Assistant 的应用页面打开。",
@@ -239,6 +248,25 @@ $("test-outlet").addEventListener("click", (event) => action(event.currentTarget
     await refreshEvents();
   } catch (error) {
     $("test-result").textContent = "未连通";
+    throw error;
+  }
+}));
+
+$("diagnose-outlet").addEventListener("click", (event) => action(event.currentTarget, "诊断中…", async () => {
+  const container = $("diagnostic-results");
+  container.replaceChildren(element("p", "empty", "正在检查认证与 HTTPS 连接，可能需要约 40 秒…"));
+  try {
+    const result = await api("diagnose", "POST", {});
+    container.replaceChildren();
+    for (const check of result.checks) {
+      const stage = check.stage === "upstream_connect" ? "上游代理握手" : "HTTPS 出口";
+      const detail = check.ok ? `成功 · HTTP ${check.http_status}${check.latency_ms === undefined ? "" : ` · ${check.latency_ms} ms`}` : (errors[check.code] || "连接失败");
+      const row = element("p", check.ok ? "field-note" : "empty", `${stage} · ${check.target}：${detail}${!check.ok && check.http_status ? `（HTTP ${check.http_status}）` : ""}`);
+      container.append(row);
+    }
+    await refreshEvents();
+  } catch (error) {
+    container.replaceChildren(element("p", "empty", "诊断未完成。"));
     throw error;
   }
 }));

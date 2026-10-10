@@ -1,4 +1,4 @@
-# HA Network Proxy — 0.3.1 开发预览
+# HA Network Proxy — 0.3.2 开发预览
 
 Home Assistant OS 代理应用，配一个可选的轻量集成。订阅和局域网共享代理的管理放在应用中；集成提供实体、自动化及有明确覆盖限制的实验接入。
 

@@ -42,7 +42,7 @@ def main():
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         original_test = fixture.service.test
-        fixture.service.test = lambda: original_test(ssl_context=fixture.ssl_context)
+        fixture.service.test = lambda target="https://www.gstatic.com/generate_204": original_test(target, ssl_context=fixture.ssl_context)
         output = ROOT / "artifacts"
         output.mkdir(exist_ok=True)
         with sync_playwright() as playwright:
@@ -64,6 +64,11 @@ def main():
             expect(page.locator("#lan-password")).to_have_value("")
             page.locator("#test-outlet").click()
             expect(page.locator("#notice")).to_contain_text("HTTP 200")
+
+            page.get_by_role("button", name="诊断连接", exact=True).click()
+            expect(page.locator("#diagnostic-results")).to_contain_text("上游代理握手 · example.com:443：成功")
+            expect(page.locator("#diagnostic-results")).to_contain_text("https://example.com/：成功")
+            expect(page.locator("#diagnostic-results")).not_to_contain_text("lan-password")
 
             page.locator("#direct-domains").fill("example.cn")
             page.locator("#proxy-domains").fill("example.com")

@@ -2,15 +2,41 @@
 
 import asyncio
 import base64
+import http.client
 import json
+import socket
+import ssl
 import threading
 import time
 from collections import deque
 from datetime import UTC, datetime
+from http.client import HTTPConnection
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 from discovery import discover
+
+
+def failure_code(error):
+    """Return only allowlisted reasons; exception text may contain credentials."""
+    if isinstance(error, HTTPError):
+        return "proxy_auth_required" if error.code == 407 else "http_error"
+    if isinstance(error, URLError):
+        error = error.reason
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return "tls_certificate_error"
+    if isinstance(error, ssl.SSLError):
+        return "tls_error"
+    if isinstance(error, TimeoutError):
+        return "network_timeout"
+    if isinstance(error, socket.gaierror):
+        return "dns_error"
+    if isinstance(error, ConnectionRefusedError):
+        return "connection_refused"
+    if isinstance(error, (ConnectionResetError, http.client.RemoteDisconnected)):
+        return "connection_closed"
+    return "network_error"
 
 
 class ForcedProxyHandler(ProxyHandler):
@@ -168,3 +194,66 @@ class Service:
             "url": test_url,
             "scope": "proxy_outlet_only",
         }
+
+    def diagnose(self):
+        """Check saved HTTP authentication and two fixed HTTPS targets.
+
+        Browser input cannot choose an address, target, or credentials. No raw
+        exceptions, response bodies, URLs from settings, or secrets are returned.
+        """
+        results = []
+        with self.store.lock:
+            source = dict(self.store.sources)
+        if source.get("lan_host") and source.get("lan_type", "http") == "http":
+            connection = HTTPConnection(
+                source["lan_host"], source.get("lan_port", 7890), timeout=8
+            )
+            response = None
+            try:
+                connection.putrequest("CONNECT", "example.com:443", skip_host=True)
+                connection.putheader("Host", "example.com:443")
+                if source.get("lan_username"):
+                    credentials = base64.b64encode(
+                        f"{source['lan_username']}:{source.get('lan_password', '')}".encode()
+                    ).decode()
+                    connection.putheader("Proxy-Authorization", f"Basic {credentials}")
+                connection.endheaders()
+                response = connection.getresponse()
+                status = response.status
+                result = {
+                    "stage": "upstream_connect",
+                    "target": "example.com:443",
+                    "ok": status == 200,
+                    "code": "ok" if status == 200 else (
+                        "proxy_auth_required" if status == 407 else "http_error"
+                    ),
+                    "http_status": status,
+                }
+            except (OSError, http.client.HTTPException) as error:
+                result = {
+                    "stage": "upstream_connect", "target": "example.com:443",
+                    "ok": False, "code": failure_code(error),
+                }
+            finally:
+                if response is not None:
+                    response.close()
+                connection.close()
+            results.append(result)
+            if result["code"] == "proxy_auth_required":
+                self.record("warning", "上游代理认证诊断返回 HTTP 407")
+                return {"checks": results, "scope": "proxy_outlet_only"}
+        for target in ("https://www.gstatic.com/generate_204", "https://example.com/"):
+            try:
+                result = self.test(target)
+                results.append({
+                    "stage": "outlet_https", "target": target,
+                    "ok": True, "code": "ok", "http_status": result["status"],
+                    "latency_ms": result["latency_ms"],
+                })
+            except (OSError, http.client.HTTPException) as error:
+                results.append({
+                    "stage": "outlet_https", "target": target,
+                    "ok": False, "code": failure_code(error),
+                })
+        self.record("info", "代理诊断完成，结果仅包含固定目标及错误分类")
+        return {"checks": results, "scope": "proxy_outlet_only"}

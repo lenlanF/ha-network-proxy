@@ -1,4 +1,5 @@
 import os
+import ssl
 import time
 import unittest
 from pathlib import Path
@@ -51,6 +52,23 @@ class RealCoreTests(unittest.TestCase):
         )
         self.assertIn("SOCKS example.com:80", self.fixture.targets)
         self.assertIn("SOCKS example.com:443", self.fixture.targets)
+
+    def test_real_diagnostic_auth_and_verified_tls_targets(self):
+        self.fixture.set_lan("http")
+        original = self.fixture.service.test
+        with patch.object(self.fixture.service, "test", side_effect=lambda target: original(
+            target, ssl_context=ssl.create_default_context() if "gstatic" in target else self.fixture.ssl_context
+        )):
+            result = self.fixture.service.diagnose()
+        self.assertTrue(result["checks"][0]["ok"])
+        # One request uses the system CA store and must reject the local test
+        # certificate; the second uses the explicit test CA and must pass.
+        self.assertEqual(result["checks"][1]["code"], "tls_certificate_error")
+        self.assertTrue(result["checks"][2]["ok"])
+        self.fixture.store.update({"lan_password": "incorrect-test-password"})
+        rejected = self.fixture.service.diagnose()
+        self.assertEqual(len(rejected["checks"]), 1)
+        self.assertEqual(rejected["checks"][0]["code"], "proxy_auth_required")
 
     def test_subscription_load_refresh_and_node_switch(self):
         self.fixture.store.update(

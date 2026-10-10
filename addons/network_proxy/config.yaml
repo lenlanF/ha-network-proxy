@@ -1,5 +1,5 @@
 name: Network Proxy
-version: "0.3.1"
+version: "0.3.2"
 image: ghcr.io/lenlanf/ha-network-proxy-{arch}
 url: https://github.com/lenlanF/ha-network-proxy
 slug: network_proxy
