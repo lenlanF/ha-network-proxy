@@ -12,9 +12,10 @@ from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from test_manager import manager
-from subscription import ConfigError
 from test_application import FakeCore, service_module
+from test_manager import manager
+
+ConfigError = manager.ConfigError
 
 
 class StartupRecoveryTests(unittest.TestCase):
