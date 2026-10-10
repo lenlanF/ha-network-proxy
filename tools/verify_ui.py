@@ -4,6 +4,7 @@ import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -20,7 +21,30 @@ def main():
         fixture.start()
         from traffic import Traffic
 
-        fixture.store.traffic = Traffic(fixture.directory)
+        fixture.store.traffic = Traffic(
+            fixture.directory,
+            SimpleNamespace(
+                inventory=lambda: [
+                    {
+                        "id": "demo_app",
+                        "name": "示例应用（UI 测试）",
+                        "state": "started",
+                        "supported": True,
+                        "ip": "172.30.33.10",
+                        "reason": "",
+                    },
+                    {
+                        "id": "host_app",
+                        "name": "主机网络应用（UI 测试）",
+                        "state": "started",
+                        "supported": False,
+                        "ip": None,
+                        "reason": "host_network",
+                    },
+                ],
+                lan_addresses=lambda: ["192.168.1.2"],
+            ),
+        )
         # Loopback allowance exists only in this test server; production is
         # restricted to the Supervisor Ingress peer at 172.30.32.2.
         prefix = "/api/hassio_ingress/fixture-session"
@@ -145,6 +169,38 @@ def main():
             page.locator("#core-mode").select_option("global")
             page.get_by_role("button", name="保存流量模式", exact=True).click()
             expect(page.locator("#notice")).to_contain_text("流量模式已保存")
+            fixture.service.report(
+                {
+                    "integrations": [
+                        {
+                            "id": "demo_integration",
+                            "name": "天气（UI 测试）",
+                            "domain": "weather",
+                            "disabled": False,
+                        }
+                    ]
+                }
+            )
+            page.get_by_role("button", name="刷新状态", exact=True).click()
+            expect(
+                page.locator('#app-targets input[value="host_app"]')
+            ).to_be_disabled()
+            page.locator("#traffic-mode").select_option("selected")
+            page.locator('#integration-targets input[value="demo_integration"]').check()
+            page.get_by_role("button", name="保存流量模式", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("流量模式已保存")
+            assert fixture.store.sources["selected_integrations"] == [
+                "demo_integration"
+            ]
+            page.locator("#sources").screenshot(
+                path=str(output / "source-settings.png")
+            )
+            page.locator("#traffic").screenshot(
+                path=str(output / "traffic-settings.png")
+            )
+            page.locator("#connection").screenshot(
+                path=str(output / "connection-addresses.png")
+            )
             page.evaluate("location.hash = 'overview'")
             page.evaluate("window.scrollTo(0, 0)")
             page.screenshot(path=str(output / "desktop.png"))

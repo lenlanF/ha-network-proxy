@@ -122,6 +122,25 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 400)
         self.assertEqual(self.store.sources["lan_host"], "192.168.1.2")
 
+    def test_scheduled_refresh_retains_working_config_and_throttles_retries(self):
+        self.store.sources.update(
+            subscription_url="https://fixture.test/sub", subscription_interval=300
+        )
+        self.store.snapshot["fetched_at"] = 0
+        with patch.object(
+            self.service, "refresh", side_effect=ValueError("failure with token")
+        ) as refresh:
+            self.service.auto_refresh()
+            self.service.auto_refresh()
+            refresh.assert_called_once()
+        self.assertNotIn(
+            "failure with token", json.dumps(self.service.event_snapshot())
+        )
+        self.store.sources["subscription_interval"] = 0
+        with patch.object(self.service, "refresh") as refresh:
+            self.service.auto_refresh()
+            refresh.assert_not_called()
+
     def test_ingress_cannot_read_integration_runtime_credentials(self):
         self.store.update(
             {"proxy_username": "outlet", "proxy_password": "private-outlet-password"}

@@ -15,12 +15,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from generate import generate
+from generate import generate, source_choice
 from subscription import ConfigError, fetch_document, url_digest
 
 VERSION = "0.4.0"
 SOURCE_DEFAULTS = {
     "subscription_url": "",
+    "subscription_interval": 3600,
     "lan_host": "",
     "lan_port": 7890,
     "lan_type": "http",
@@ -67,6 +68,9 @@ def validate_sources(sources):
         elif key == "lan_port":
             if type(value) is not int or not 1 <= value <= 65535:
                 raise ValueError("Invalid port")
+        elif key == "subscription_interval":
+            if type(value) is not int or value != 0 and not 300 <= value <= 604800:
+                raise ValueError("Invalid subscription interval")
         elif key in RULE_DEFAULTS and key != "default_action":
             if (
                 not isinstance(value, list)
@@ -185,7 +189,10 @@ class SettingsStore:
             if url and (
                 refresh
                 or "subscription_url" in changes
-                or snapshot.get("url_hash") != url_digest(url)
+                or (
+                    source_choice(sources) == "subscription"
+                    and snapshot.get("url_hash") != url_digest(url)
+                )
             ):
                 snapshot = {
                     "url_hash": url_digest(url),
@@ -200,6 +207,14 @@ class SettingsStore:
                     self.validator(candidate)
             elif not url:
                 snapshot = {}
+            elif "extension_yaml" in changes and snapshot.get("url_hash") == url_digest(
+                url
+            ):
+                candidate = self.config(
+                    {**sources, "outlet_source": "subscription"}, snapshot
+                )
+                if self.validator:
+                    self.validator(candidate)
             new_config = self.config(sources, snapshot)
             old_config = self.config(self.sources)
             if self.validator:
@@ -233,7 +248,11 @@ class SettingsStore:
     def prepare(self):
         """Restore the last private snapshot without contacting the subscription."""
         url = self.sources.get("subscription_url", "")
-        if url and self.snapshot.get("url_hash") != url_digest(url):
+        if (
+            url
+            and source_choice(self.sources) == "subscription"
+            and self.snapshot.get("url_hash") != url_digest(url)
+        ):
             self.snapshot = {
                 "url_hash": url_digest(url),
                 "document": self.fetcher(url),
@@ -502,6 +521,13 @@ def main():
                 time.sleep(15)
 
         threading.Thread(target=reconcile, daemon=True).start()
+
+        def refresh_subscription():
+            while core.poll() is None:
+                service.auto_refresh()
+                time.sleep(30)
+
+        threading.Thread(target=refresh_subscription, daemon=True).start()
 
         def stop(_signum, _frame):
             core.terminate()

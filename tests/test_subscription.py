@@ -20,6 +20,37 @@ DOCUMENT = {
 
 
 class SubscriptionTests(unittest.TestCase):
+    def test_yaml_merge_overrides_are_legal_but_expansion_is_bounded(self):
+        doc = parse_document(
+            "base: &base {name: A, type: http}\nproxies:\n  - <<: *base\n    name: B\n"
+        )
+        self.assertEqual(doc["proxies"][0], {"name": "B", "type": "http"})
+        layers = ["a0: &a0 {value: 1}"]
+        for index in range(1, 22):
+            layers.append(f"a{index}: &a{index} {{<<: [*a{index - 1}, *a{index - 1}]}}")
+        with self.assertRaises(ConfigError):
+            parse_document("\n".join(layers))
+
+    def test_inactive_uncached_subscription_does_not_block_lan_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sources = {
+                "lan_host": "192.168.1.2",
+                "outlet_source": "lan",
+                "subscription_url": "https://expired.test/token",
+            }
+            (Path(directory) / "sources.json").write_text(json.dumps(sources))
+            store = manager.SettingsStore(
+                directory,
+                {"controller_secret": "x" * 24},
+                lambda config: None,
+                fetcher=Mock(
+                    side_effect=AssertionError("Inactive source should not block LAN")
+                ),
+            )
+            store.prepare()
+            store.update({"share_enabled": True})
+            self.assertEqual(store.config(store.sources)["proxies"][0]["name"], "LAN")
+
     def test_overlay_deep_merge_and_rules_before_catchall(self):
         config = compose(
             DOCUMENT,

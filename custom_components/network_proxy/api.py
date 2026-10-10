@@ -2,6 +2,8 @@ from aiohttp import ClientTimeout
 
 
 class Controller:
+    mutation_timeout = 10
+
     def __init__(self, session, url, secret):
         self.session, self.url, self.secret = session, url.rstrip("/"), secret
 
@@ -11,7 +13,9 @@ class Controller:
             self.url + path,
             headers={"Authorization": f"Bearer {self.secret}"},
             json=data,
-            timeout=ClientTimeout(total=10),
+            timeout=ClientTimeout(
+                total=self.mutation_timeout if method in ("POST", "PUT") else 10
+            ),
         ) as response:
             response.raise_for_status()
             if response.status == 204:
@@ -23,6 +27,8 @@ class Controller:
 
 
 class Manager(Controller):
+    mutation_timeout = 120
+
     async def status(self):
         result = await self.request("GET", "/api/status")
         result["current"] = result["current_label"] if result["configured"] else None

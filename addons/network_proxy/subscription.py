@@ -22,10 +22,18 @@ class UniqueLoader(yaml.SafeLoader):
 
 
 def mapping(loader, node, deep=False):
+    explicit = set()
+    for key, _value in node.value:
+        if key.tag == "tag:yaml.org,2002:merge":
+            continue
+        name = loader.construct_object(key)
+        if not isinstance(name, str) or name in explicit:
+            raise ConfigError("invalid_yaml")
+        explicit.add(name)
     loader.flatten_mapping(node)
     result = {}
     for key, value in loader.construct_pairs(node, deep=deep):
-        if not isinstance(key, str) or key in result:
+        if not isinstance(key, str):
             raise ConfigError("invalid_yaml")
         result[key] = value
     return result
@@ -38,7 +46,31 @@ def parse_document(body, *, empty=False):
     if len(body.encode() if isinstance(body, str) else body) > MAX_BYTES:
         raise ConfigError("config_too_large")
     try:
-        doc = yaml.load(body, Loader=UniqueLoader)
+        loader = UniqueLoader(body)
+        try:
+            node = loader.get_single_node()
+            budget = [50000]
+
+            def inspect_node(current, ancestors=(), depth=0):
+                budget[0] -= 1
+                if budget[0] < 0 or depth > 32 or id(current) in ancestors:
+                    raise ConfigError("invalid_yaml")
+                descendants = (*ancestors, id(current))
+                if isinstance(current, yaml.MappingNode):
+                    for key, value in current.value:
+                        inspect_node(key, descendants, depth + 1)
+                        inspect_node(value, descendants, depth + 1)
+                elif isinstance(current, yaml.SequenceNode):
+                    for value in current.value:
+                        inspect_node(value, descendants, depth + 1)
+
+            if node is not None:
+                # Count expanded aliases before merge constructors can allocate
+                # an exponential mapping or recurse through an alias cycle.
+                inspect_node(node)
+            doc = loader.construct_document(node) if node is not None else None
+        finally:
+            loader.dispose()
     except (yaml.YAMLError, UnicodeError, RecursionError) as error:
         raise ConfigError("invalid_yaml") from error
     if doc is None and empty:

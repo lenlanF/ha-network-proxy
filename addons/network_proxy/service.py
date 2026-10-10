@@ -85,6 +85,7 @@ class Service:
         self.events_lock = threading.Lock()
         self.integrations = []
         self.report_time = 0
+        self.last_subscription_attempt = 0
         self.record("info", "代理管理服务已启动")
 
     def record(self, level, message):
@@ -187,6 +188,27 @@ class Service:
         self.store.update({}, refresh=True)
         self.record("info", "订阅已重新拉取、校验并加载")
         return {"refreshed": True}
+
+    def auto_refresh(self):
+        with self.store.lock:
+            url = self.store.sources.get("subscription_url")
+            interval = self.store.sources.get("subscription_interval", 3600)
+            fetched = self.store.snapshot.get("fetched_at", 0)
+        now = time.time()
+        if (
+            not url
+            or not interval
+            or now - fetched < interval
+            or now - self.last_subscription_attempt < 300
+        ):
+            return
+        self.last_subscription_attempt = now
+        try:
+            self.refresh()
+        except (OSError, ValueError, http.client.HTTPException):
+            self.record(
+                "warning", "订阅自动更新失败，继续保留上次可用配置；五分钟后重试"
+            )
 
     def scan(self, cidr):
         results = asyncio.run(discover(cidr))
