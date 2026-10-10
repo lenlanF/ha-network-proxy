@@ -16,6 +16,39 @@ CORE = Path(
     CORE.exists(), "Place the official Mihomo binary in .tools to run real-core tests"
 )
 class RealCoreTests(unittest.TestCase):
+    def test_saved_bad_group_recovers_with_reject_outlet_then_repairs(self):
+        from subscription import ConfigError
+
+        self.fixture.store.update(
+            {
+                "subscription_url": f"http://127.0.0.1:{self.fixture.subscription_port}/subscription",
+                "outlet_source": "subscription",
+            }
+        )
+        self.fixture.store.sources["extension_yaml"] = (
+            "proxy-groups:\n  - name: Broken\n    type: select"
+        )
+        from manager import atomic_json
+
+        atomic_json(self.fixture.store.path, self.fixture.store.sources)
+        original = self.fixture.store.path.read_bytes()
+        self.fixture.store.prepare_or_recover()
+        self.fixture.store.reload_config(self.fixture.store.runtime_config)
+        self.assertEqual(self.fixture.store.path.read_bytes(), original)
+        self.assertEqual(
+            self.fixture.store.recovery_error, "core_validation_proxy_group"
+        )
+        self.assertFalse(self.fixture.service.status()["configured"])
+        group = self.fixture.client.request("GET", "/proxies/NETWORK_PROXY_OUTLET")
+        self.assertEqual(group["now"], "REJECT")
+        with self.assertRaises(ConfigError):
+            self.fixture.service.runtime()
+        self.fixture.store.update({"extension_yaml": ""})
+        self.assertEqual(self.fixture.store.recovery_error, "")
+        self.assertEqual(
+            self.fixture.service.test("http://example.com/repaired")["status"], 200
+        )
+
     def setUp(self):
         from core_fixture import Fixture
 
