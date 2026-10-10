@@ -27,7 +27,7 @@ def main():
                 inventory=lambda: [
                     {
                         "id": "demo_app",
-                        "name": "ʾ��Ӧ�ã�UI ���ԣ�",
+                        "name": "示例应用（UI 测试）",
                         "state": "started",
                         "supported": True,
                         "ip": "172.30.33.10",
@@ -35,7 +35,7 @@ def main():
                     },
                     {
                         "id": "host_app",
-                        "name": "��������Ӧ�ã�UI ���ԣ�",
+                        "name": "主机网络应用（UI 测试）",
                         "state": "started",
                         "supported": False,
                         "ip": None,
@@ -82,25 +82,25 @@ def main():
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(f"http://127.0.0.1:{server.server_port}{prefix}/")
-            expect(page.locator("#core-state")).to_have_text("�����ô���Դ")
+            expect(page.locator("#core-state")).to_have_text("待配置代理源")
             page.locator("#lan-host").fill("127.0.0.1")
             page.locator("#lan-port").fill(str(fixture.http_port))
             page.locator("#lan-user").fill("lan-user")
             page.locator("#lan-password").fill("lan-password")
             page.locator("#outlet-source").select_option("lan")
-            page.get_by_role("button", name="�����������", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("������������ȡ")
-            expect(page.locator("#current-node")).to_have_text("��������������")
+            page.get_by_role("button", name="保存代理配置", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("代理配置已拉取")
+            expect(page.locator("#current-node")).to_have_text("局域网共享代理")
             expect(page.locator("#lan-password")).to_have_value("")
             page.locator("#test-outlet").click()
             expect(page.locator("#notice")).to_contain_text("HTTP 200")
 
-            page.get_by_role("button", name="�������", exact=True).click()
+            page.get_by_role("button", name="诊断连接", exact=True).click()
             expect(page.locator("#diagnostic-results")).to_contain_text(
-                "���δ������� �� example.com:443���ɹ�"
+                "上游代理握手 · example.com:443：成功"
             )
             expect(page.locator("#diagnostic-results")).to_contain_text(
-                "https://example.com/���ɹ�"
+                "https://example.com/：成功"
             )
             expect(page.locator("#diagnostic-results")).not_to_contain_text(
                 "lan-password"
@@ -109,25 +109,25 @@ def main():
             page.locator("#legacy-rules summary").click()
             page.locator("#direct-domains").fill("example.cn")
             page.locator("#proxy-domains").fill("example.com")
-            page.get_by_role("button", name="������׹���", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("���׹����ѱ���")
+            page.get_by_role("button", name="保存简易规则", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("简易规则已保存")
             assert fixture.store.sources["lan_password"] == "lan-password"
 
             page.locator("#cidr").fill("8.8.8.0/24")
-            page.get_by_role("button", name="���ִ���", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("������Ч")
+            page.get_by_role("button", name="发现代理", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("设置无效")
             # Positive discovery results are a UI fixture, not a LAN scan.
             fixture.service.scan = lambda _cidr: {
                 "proxies": [f"http://127.0.0.1:{fixture.http_port}"]
             }
             page.locator("#cidr").fill("192.168.1.0/24")
-            page.get_by_role("button", name="���ִ���", exact=True).click()
-            page.get_by_role("button", name="�����������", exact=True).click()
+            page.get_by_role("button", name="发现代理", exact=True).click()
+            page.get_by_role("button", name="填入代理配置", exact=True).click()
             expect(page.locator("#lan-host")).to_have_value("127.0.0.1")
 
             # Reload discards the unsaved discovery form and reads persisted settings.
             page.reload()
-            expect(page.locator("#current-node")).to_have_text("��������������")
+            expect(page.locator("#current-node")).to_have_text("局域网共享代理")
             expect(page.locator("#lan-user")).to_have_value("lan-user")
             page.locator("#subscription-url").fill(
                 f"http://127.0.0.1:{fixture.subscription_port}/subscription"
@@ -136,61 +136,61 @@ def main():
             page.locator("#extension-yaml").fill(
                 "append-rules:\n  - DOMAIN,override.test,FixturePolicy"
             )
-            page.get_by_role("button", name="�����������", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("������������ȡ")
-            page.get_by_role("button", name="ˢ��״̬", exact=True).click()
-            expect(page.locator("#current-node")).to_have_text("��������")
+            page.get_by_role("button", name="保存代理配置", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("代理配置已拉取")
+            page.get_by_role("button", name="刷新状态", exact=True).click()
+            expect(page.locator("#current-node")).to_have_text("订阅配置")
             expect(page.locator("#nodes .node")).to_have_count(2)
             expect(page.locator("#nodes")).not_to_contain_text("Fixture-B")
-            page.get_by_role("button", name="ʹ�� ��������������", exact=True).click()
-            expect(page.locator("#current-node")).to_have_text("��������������")
-            page.get_by_role("button", name="ʹ�� ��������", exact=True).click()
-            expect(page.locator("#notice")).to_have_text("���л����������á�")
-            page.get_by_role("button", name="���¶���", exact=True).click()
-            expect(page.locator("#notice")).to_have_text("������������ȡ�����ء�")
+            page.get_by_role("button", name="使用 局域网共享代理", exact=True).click()
+            expect(page.locator("#current-node")).to_have_text("局域网共享代理")
+            page.get_by_role("button", name="使用 订阅配置", exact=True).click()
+            expect(page.locator("#notice")).to_have_text("已切换到订阅配置。")
+            page.get_by_role("button", name="更新订阅", exact=True).click()
+            expect(page.locator("#notice")).to_have_text("订阅已重新拉取并加载。")
             page.locator("#test-outlet").click()
             expect(page.locator("#notice")).to_contain_text("HTTP 200")
             page.locator("#share-enabled").check()
-            page.get_by_role("button", name="���湲������", exact=True).click()
-            expect(page.locator("#notice")).to_have_text("���������ѱ��档")
+            page.get_by_role("button", name="保存共享设置", exact=True).click()
+            expect(page.locator("#notice")).to_have_text("共享设置已保存。")
             assert fixture.store.sources["share_enabled"]
             expect(page.locator("#copy-manager_url")).to_have_value(
                 "http://127.0.0.1:9091"
             )
-            page.get_by_role("button", name="����Ӧ�ù�����ַ", exact=True).click()
-            expect(page.locator("#notice")).to_have_text("�ڲ���ַ�Ѹ��ơ�")
+            page.get_by_role("button", name="复制应用管理地址", exact=True).click()
+            expect(page.locator("#notice")).to_have_text("内部地址已复制。")
             page.locator("#traffic-mode").select_option("selected")
-            expect(page.locator("#integration-targets")).to_contain_text("��������")
+            expect(page.locator("#integration-targets")).to_contain_text("请先连接")
             page.locator("#traffic-mode").select_option("haos")
-            page.get_by_role("button", name="��������ģʽ", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("͸������������")
+            page.get_by_role("button", name="保存流量模式", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("透明代理不可用")
             assert fixture.store.sources.get("traffic_mode", "explicit") == "explicit"
             page.locator("#traffic-mode").select_option("explicit")
             page.locator("#core-mode").select_option("global")
-            page.get_by_role("button", name="��������ģʽ", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("����ģʽ�ѱ���")
+            page.get_by_role("button", name="保存流量模式", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("流量模式已保存")
             fixture.service.report(
                 {
                     "integrations": [
                         {
                             "id": "demo_integration",
-                            "name": "������UI ���ԣ�",
+                            "name": "天气（UI 测试）",
                             "domain": "weather",
                             "disabled": False,
                         }
                     ]
                 }
             )
-            page.get_by_role("button", name="ˢ��״̬", exact=True).click()
-            expect(page.locator("#integration-state")).to_contain_text("���׼���������")
+            page.get_by_role("button", name="刷新状态", exact=True).click()
+            expect(page.locator("#integration-state")).to_contain_text("配套集成已连接")
             expect(
                 page.locator('#app-targets input[value="host_app"]')
             ).to_be_disabled()
             page.locator("#traffic-mode").select_option("selected")
             page.locator('#integration-targets input[value="demo_integration"]').check()
-            page.get_by_role("button", name="��������ģʽ", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("����ģʽ�ѱ���")
-            expect(page.locator("#traffic-state")).to_have_text("����Ӧ�� / ����")
+            page.get_by_role("button", name="保存流量模式", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("流量模式已保存")
+            expect(page.locator("#traffic-state")).to_have_text("部分应用 / 集成")
             assert fixture.store.sources["selected_integrations"] == [
                 "demo_integration"
             ]
@@ -217,19 +217,19 @@ def main():
             fixture.store.prepare_or_recover()
             fixture.store.reload_config(fixture.store.runtime_config)
             page.reload()
-            expect(page.locator("#core-state")).to_have_text("���ûָ���")
+            expect(page.locator("#core-state")).to_have_text("配置恢复中")
             expect(page.locator("#recovery-note")).to_be_visible()
-            expect(page.locator("#recovery-note")).to_contain_text("������У��ʧ��")
-            expect(page.locator("#current-node")).to_have_text("δ����")
+            expect(page.locator("#recovery-note")).to_contain_text("策略组校验失败")
+            expect(page.locator("#current-node")).to_have_text("未配置")
             page.screenshot(path=str(output / "startup-recovery-mobile.png"))
             page.set_viewport_size({"width": 1440, "height": 1000})
             page.screenshot(path=str(output / "startup-recovery.png"))
             page.locator("#extension-yaml").fill("")
-            page.get_by_role("button", name="�����������", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("������������ȡ")
+            page.get_by_role("button", name="保存代理配置", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("代理配置已拉取")
             expect(page.locator("#recovery-note")).to_be_hidden()
-            expect(page.locator("#current-node")).to_have_text("��������")
-            expect(page.locator("#traffic-state")).to_have_text("��ʽ����")
+            expect(page.locator("#current-node")).to_have_text("订阅配置")
+            expect(page.locator("#traffic-state")).to_have_text("显式出口")
             assert not fixture.store.sources["share_enabled"]
             assert errors == [], errors
             browser.close()

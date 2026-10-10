@@ -20,6 +20,22 @@ DOCUMENT = {
 
 
 class SubscriptionTests(unittest.TestCase):
+    def test_json_emoji_pairs_decode_and_duplicate_keys_stay_rejected(self):
+        name = "🇭🇰香港代理🚀"
+        document = {name: {"name": name}}
+        self.assertEqual(parse_document(json.dumps(document)), document)
+        self.assertEqual(
+            parse_document(json.dumps(document, ensure_ascii=False)), document
+        )
+        for body in (
+            '{"name": "\\ud83d"}',
+            '{"name": "\\ude00"}',
+            '{"a": 1, "a": 2}',
+            '{"😀": 1, "\\ud83d\\ude00": 2}',
+        ):
+            with self.subTest(body=body), self.assertRaises(ConfigError):
+                parse_document(body)
+
     def test_yaml_merge_overrides_are_legal_but_expansion_is_bounded(self):
         doc = parse_document(
             "base: &base {name: A, type: http}\nproxies:\n  - <<: *base\n    name: B\n"
