@@ -31,7 +31,9 @@ def password_selector():
 def connection_schema(values):
     return vol.Schema(
         {
-            vol.Required(key, default=values.get(key, default)): password_selector()
+            (vol.Optional if key in ("proxy_username", "proxy_password") else vol.Required)(
+                key, default=values.get(key, default)
+            ): password_selector()
             if key in ("secret", "proxy_password")
             else str
             for key, default in CONNECTION_DEFAULTS.items()
