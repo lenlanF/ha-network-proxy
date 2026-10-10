@@ -34,7 +34,7 @@ UPSTREAM = "192.168.200.2"
 
 
 def run(*args):
-    result = subprocess.run(list(args), capture_output=True, timeout=20)
+    result = subprocess.run(list(args), capture_output=True, timeout=20, check=False)
     if result.returncode:
         print(result.stderr.decode(), flush=True)
         result.check_returncode()
