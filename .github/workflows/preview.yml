@@ -1,0 +1,36 @@
+name: Verify proposed proxy changes
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m ruff check addons custom_components tests tools
+      - name: Build native preview without publishing
+        run: docker build --build-arg BUILD_VERSION=0.4.0 --build-arg BUILD_ARCH=${{ matrix.arch }} -t network-proxy:test addons/network_proxy
+      - name: Verify real core and isolated network
+        shell: bash
+        run: |
+          mkdir -p .tools
+          CID=$(docker create network-proxy:test)
+          docker cp "$CID":/usr/local/bin/mihomo .tools/mihomo
+          docker rm "$CID"
+          chmod +x .tools/mihomo
+          MIHOMO_BINARY="$PWD/.tools/mihomo" python -m unittest discover -s tests -v
+          docker run --rm --privileged --network=none -e NP_ISOLATED_TEST=1 -v "$PWD:/repo:ro" -w /repo --entrypoint python network-proxy:test tools/verify_traffic.py

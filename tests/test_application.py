@@ -28,7 +28,7 @@ class FakeCore:
         if path == "/proxies":
             return {
                 "proxies": {
-                    "PROXY": {"all": ["LAN"], "now": self.current},
+                    "NETWORK_PROXY_OUTLET": {"all": ["LAN"], "now": self.current},
                     "LAN": {"type": "Http", "history": []},
                 }
             }
@@ -122,6 +122,22 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 400)
         self.assertEqual(self.store.sources["lan_host"], "192.168.1.2")
 
+    def test_ingress_cannot_read_integration_runtime_credentials(self):
+        self.store.update(
+            {"proxy_username": "outlet", "proxy_password": "private-outlet-password"}
+        )
+        for path in ("/integration/runtime", "/api/integration/runtime"):
+            with self.assertRaises(HTTPError) as error:
+                self.request(path)
+            self.assertEqual(error.exception.code, 404)
+        with self.request("/api/settings") as response:
+            settings = json.load(response)
+        self.assertNotIn("proxy_password", settings)
+        self.assertTrue(settings["has_proxy_password"])
+        self.assertEqual(
+            self.service.runtime()["proxy_password"], "private-outlet-password"
+        )
+
     def test_csrf_missing_marker_and_unknown_node_rejected(self):
         with self.assertRaises(HTTPError) as error:
             self.request(
@@ -140,9 +156,9 @@ class ApplicationTests(unittest.TestCase):
 
     def test_status_and_node_selection(self):
         with self.request("/api/status") as response:
-            self.assertEqual(json.load(response)["current"], "LAN")
-        with self.request("/api/select", "POST", {"name": "LAN"}) as response:
-            self.assertEqual(json.load(response)["selected"], "LAN")
+            self.assertEqual(json.load(response)["current"], "lan")
+        with self.request("/api/select", "POST", {"name": "lan"}) as response:
+            self.assertEqual(json.load(response)["selected"], "lan")
 
     def test_default_ingress_rejects_local_peer_even_with_spoofed_header(self):
         server = ThreadingHTTPServer(
@@ -174,7 +190,7 @@ class ApplicationTests(unittest.TestCase):
             self.store.update({"proxy_domains": ["example.com,DIRECT"]})
         self.store.update({"proxy_cidrs": ["2001:db8::/32"]})
         self.assertIn(
-            "IP-CIDR6,2001:db8::/32,PROXY,no-resolve",
+            "IP-CIDR6,2001:db8::/32,NETWORK_PROXY_OUTLET,no-resolve",
             self.store.config(self.store.sources)["rules"],
         )
 
@@ -191,21 +207,38 @@ class ApplicationTests(unittest.TestCase):
 
     def test_test_endpoint_classifies_failure_without_leaking_credentials(self):
         failures = [
-            (HTTPError("https://token-secret@example.test", 407, "secret-lan-password", {}, io.BytesIO()), "proxy_auth_required"),
-            (URLError(ssl.SSLCertVerificationError("secret-lan-password")), "tls_certificate_error"),
+            (
+                HTTPError(
+                    "https://token-secret@example.test",
+                    407,
+                    "secret-lan-password",
+                    {},
+                    io.BytesIO(),
+                ),
+                "proxy_auth_required",
+            ),
+            (
+                URLError(ssl.SSLCertVerificationError("secret-lan-password")),
+                "tls_certificate_error",
+            ),
             (URLError(TimeoutError("secret-lan-password")), "network_timeout"),
             (socket.gaierror("secret-lan-password"), "dns_error"),
             (ConnectionRefusedError("secret-lan-password"), "connection_refused"),
         ]
         for failure, code in failures:
-            with self.subTest(code=code), patch.object(self.service, "test", side_effect=failure):
+            with (
+                self.subTest(code=code),
+                patch.object(self.service, "test", side_effect=failure),
+            ):
                 with self.assertRaises(HTTPError) as error:
                     self.request("/api/test", "POST", {})
                 body = error.exception.read().decode()
                 self.assertEqual(json.loads(body), {"error": code})
                 self.assertNotIn("secret-lan-password", body)
                 self.assertNotIn("token-secret", body)
-        self.assertNotIn("secret-lan-password", json.dumps(self.service.event_snapshot()))
+        self.assertNotIn(
+            "secret-lan-password", json.dumps(self.service.event_snapshot())
+        )
 
     def test_diagnostic_auth_rejection_is_redacted_and_skips_outlet(self):
         with patch.object(service_module, "HTTPConnection") as connection:
@@ -224,15 +257,27 @@ class ApplicationTests(unittest.TestCase):
     def test_diagnostic_targets_fixed_and_distinguishes_certificate_failure(self):
         with patch.object(service_module, "HTTPConnection") as connection:
             connection.return_value.getresponse.return_value.status = 200
-            with patch.object(self.service, "test", side_effect=[
-                URLError(ssl.SSLCertVerificationError("token-secret")),
-                {"status": 200, "latency_ms": 12},
-            ]) as outlet:
-                with self.request("/api/diagnose", "POST", {"url": "http://private.test/", "password": "attacker"}) as response:
+            with patch.object(
+                self.service,
+                "test",
+                side_effect=[
+                    URLError(ssl.SSLCertVerificationError("token-secret")),
+                    {"status": 200, "latency_ms": 12},
+                ],
+            ) as outlet:
+                with self.request(
+                    "/api/diagnose",
+                    "POST",
+                    {"url": "http://private.test/", "password": "attacker"},
+                ) as response:
                     result = json.load(response)
-                self.assertEqual([call.args[0] for call in outlet.call_args_list], [
-                    "https://www.gstatic.com/generate_204", "https://example.com/",
-                ])
+                self.assertEqual(
+                    [call.args[0] for call in outlet.call_args_list],
+                    [
+                        "https://www.gstatic.com/generate_204",
+                        "https://example.com/",
+                    ],
+                )
             self.assertEqual(result["checks"][1]["code"], "tls_certificate_error")
             self.assertTrue(result["checks"][2]["ok"])
             self.assertNotIn("token-secret", json.dumps(result))

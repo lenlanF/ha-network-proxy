@@ -8,14 +8,17 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from generate import generate
+from subscription import ConfigError, fetch_document, url_digest
 
-VERSION = "0.3.2"
+VERSION = "0.4.0"
 SOURCE_DEFAULTS = {
     "subscription_url": "",
     "lan_host": "",
@@ -23,6 +26,15 @@ SOURCE_DEFAULTS = {
     "lan_type": "http",
     "lan_username": "",
     "lan_password": "",
+    "extension_yaml": "",
+    "outlet_source": "",
+    "core_mode": "rule",
+    "traffic_mode": "explicit",
+    "selected_apps": [],
+    "selected_integrations": [],
+    "share_enabled": False,
+    "proxy_username": "",
+    "proxy_password": "",
 }
 RULE_DEFAULTS = {
     "direct_domains": [],
@@ -38,7 +50,21 @@ def validate_sources(sources):
     if not isinstance(sources, dict) or set(sources) - SOURCE_KEYS:
         raise ValueError("Invalid source fields")
     for key, value in sources.items():
-        if key == "lan_port":
+        if key == "share_enabled":
+            if type(value) is not bool:
+                raise ValueError("Invalid sharing option")
+        elif key in ("selected_apps", "selected_integrations"):
+            if (
+                not isinstance(value, list)
+                or len(value) > 256
+                or any(
+                    not isinstance(item, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", item)
+                    for item in value
+                )
+            ):
+                raise ValueError("Invalid targets")
+        elif key == "lan_port":
             if type(value) is not int or not 1 <= value <= 65535:
                 raise ValueError("Invalid port")
         elif key in RULE_DEFAULTS and key != "default_action":
@@ -48,7 +74,9 @@ def validate_sources(sources):
                 or any(not isinstance(item, str) for item in value)
             ):
                 raise ValueError("Invalid rules")
-        elif not isinstance(value, str) or len(value) > 8192:
+        elif not isinstance(value, str) or len(value) > (
+            131072 if key == "extension_yaml" else 8192
+        ):
             raise ValueError("Invalid source value")
     host = sources.get("lan_host", "")
     if host and (any(char in host for char in "/\\@ \r\n") or ":" in host):
@@ -62,6 +90,8 @@ def validate_sources(sources):
         raise ValueError("The application outlet cannot be its own upstream")
     if bool(sources.get("lan_username")) != bool(sources.get("lan_password")):
         raise ValueError("Set both LAN credentials")
+    if bool(sources.get("proxy_username")) != bool(sources.get("proxy_password")):
+        raise ValueError("Set both outlet credentials")
 
 
 def atomic_json(path, value):
@@ -74,7 +104,16 @@ def atomic_json(path, value):
 
 
 class SettingsStore:
-    def __init__(self, directory, options, reload_config):
+    def __init__(
+        self,
+        directory,
+        options,
+        reload_config,
+        *,
+        fetcher=fetch_document,
+        validator=None,
+        traffic=None,
+    ):
         self.directory, self.options, self.reload_config = (
             Path(directory),
             options,
@@ -82,24 +121,44 @@ class SettingsStore:
         )
         self.lock = threading.Lock()
         self.path = self.directory / "sources.json"
+        self.snapshot_path = self.directory / "subscription.json"
+        self.fetcher, self.validator, self.traffic = fetcher, validator, traffic
+        self.snapshot = (
+            json.loads(self.snapshot_path.read_text())
+            if self.snapshot_path.exists()
+            else {}
+        )
         self.sources = (
             json.loads(self.path.read_text())
             if self.path.exists()
             else {key: options[key] for key in SOURCE_KEYS if key in options}
         )
+        # One-time migration of former Supervisor business options. Never enable
+        # transparent routing as a side effect of upgrading.
+        for key in ("proxy_username", "proxy_password"):
+            if key not in self.sources and key in options:
+                self.sources[key] = options[key]
         validate_sources(self.sources)
 
-    def config(self, sources):
+    def config(self, sources, snapshot=None):
         base = {
             key: value for key, value in self.options.items() if key not in SOURCE_KEYS
         }
+        snapshot = self.snapshot if snapshot is None else snapshot
+        url = sources.get("subscription_url", "")
+        document = (
+            snapshot.get("document")
+            if snapshot.get("url_hash") == url_digest(url)
+            else None
+        )
         return generate(
             {**base, **sources},
             bootstrap=not sources.get("subscription_url")
             and not sources.get("lan_host"),
+            subscription_document=document,
         )
 
-    def update(self, changes):
+    def update(self, changes, *, refresh=False):
         if not isinstance(changes, dict) or set(changes) - SOURCE_KEYS:
             raise ValueError("Invalid source fields")
         with self.lock:
@@ -114,18 +173,103 @@ class SettingsStore:
             )
             if old_identity != new_identity and "lan_password" not in changes:
                 sources.pop("lan_password", None)
+            if (
+                sources.get("proxy_username", "")
+                != self.sources.get("proxy_username", "")
+                and "proxy_password" not in changes
+            ):
+                sources.pop("proxy_password", None)
             validate_sources(sources)
-            new_config = self.config(sources)
+            snapshot = self.snapshot
+            url = sources.get("subscription_url", "")
+            if url and (
+                refresh
+                or "subscription_url" in changes
+                or snapshot.get("url_hash") != url_digest(url)
+            ):
+                snapshot = {
+                    "url_hash": url_digest(url),
+                    "document": self.fetcher(url),
+                    "fetched_at": int(time.time()),
+                }
+                # Validate saved subscriptions even when the active outlet is LAN.
+                candidate = self.config(
+                    {**sources, "outlet_source": "subscription"}, snapshot
+                )
+                if self.validator:
+                    self.validator(candidate)
+            elif not url:
+                snapshot = {}
+            new_config = self.config(sources, snapshot)
             old_config = self.config(self.sources)
-            atomic_json(self.path, sources)
+            if self.validator:
+                self.validator(new_config)
+            new_plan = self.traffic.plan(sources) if self.traffic else None
+            old_plan = (
+                (
+                    dict(self.traffic.state)
+                    or {"scope": "explicit", "ips": [], "tun": False}
+                )
+                if self.traffic
+                else None
+            )
             try:
                 self.reload_config(new_config)
+                if self.traffic:
+                    self.traffic.apply(new_plan)
+                atomic_json(self.snapshot_path, snapshot)
+                atomic_json(self.path, sources)
                 atomic_json(self.directory / "config.json", new_config)
             except Exception:
+                atomic_json(self.snapshot_path, self.snapshot)
                 atomic_json(self.path, self.sources)
                 self.reload_config(old_config)
+                if self.traffic:
+                    self.traffic.apply(old_plan)
                 raise
             self.sources = dict(sources)
+            self.snapshot = snapshot
+
+    def prepare(self):
+        """Restore the last private snapshot without contacting the subscription."""
+        url = self.sources.get("subscription_url", "")
+        if url and self.snapshot.get("url_hash") != url_digest(url):
+            self.snapshot = {
+                "url_hash": url_digest(url),
+                "document": self.fetcher(url),
+                "fetched_at": int(time.time()),
+            }
+            atomic_json(self.snapshot_path, self.snapshot)
+        if self.traffic:
+            self.traffic.cleanup()
+            self.traffic.plan(self.sources)
+        config = self.config(self.sources)
+        if self.validator:
+            self.validator(config)
+        atomic_json(self.directory / "config.json", config)
+        atomic_json(self.path, self.sources)
+
+
+def validate_mihomo(directory, config, binary="mihomo"):
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", dir=directory, delete=False
+    ) as handle:
+        json.dump(config, handle)
+        path = Path(handle.name)
+    try:
+        result = subprocess.run(
+            [binary, "-t", "-d", str(directory), "-f", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=45,
+            check=False,
+        )
+        if result.returncode:
+            raise ConfigError("core_validation_failed")
+    except subprocess.TimeoutExpired as error:
+        raise ConfigError("core_validation_timeout") from error
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def handler_factory(
@@ -186,7 +330,7 @@ def handler_factory(
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 raise ValueError("Expected JSON")
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 32768:
+            if not 0 < size <= 262144:
                 raise ValueError("Invalid size")
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
@@ -209,6 +353,10 @@ def handler_factory(
                     payload = service.settings()
                 elif service and path == "/api/events":
                     payload = {"events": service.event_snapshot()}
+                elif service and path == "/api/targets":
+                    payload = service.targets()
+                elif service and path == "/integration/runtime" and not ingress:
+                    payload = service.runtime()
                 else:
                     self.respond(404, {"error": "not_found"})
                     return
@@ -264,9 +412,18 @@ def handler_factory(
                     payload = service.test()
                 elif service and method == "POST" and path == "/api/diagnose":
                     payload = service.diagnose()
+                elif (
+                    service
+                    and method == "POST"
+                    and path == "/integration/report"
+                    and not ingress
+                ):
+                    payload = service.report(data)
                 else:
                     self.respond(404, {"error": "not_found"})
                     return
+            except ConfigError as error:
+                self.respond(400, {"error": error.code})
             except (ValueError, TypeError, UnicodeDecodeError):
                 self.respond(400, {"error": "invalid_settings"})
             except (OSError, http.client.HTTPException) as error:
@@ -286,26 +443,65 @@ def handler_factory(
 
 def main():
     from service import CoreClient, Service
+    from traffic import Traffic
 
     os.umask(0o077)
     directory = Path("/data")
     options = json.loads((directory / "options.json").read_text())
     secret = options["controller_secret"]
     client = CoreClient(secret)
-    store = SettingsStore(directory, options, client.reload)
-    atomic_json(directory / "config.json", store.config(store.sources))
+    traffic = Traffic(directory)
+    store = SettingsStore(
+        directory,
+        options,
+        client.reload,
+        validator=lambda config: validate_mihomo(directory, config),
+        traffic=traffic,
+    )
+    store.prepare()
     service = Service(store, client)
     core = subprocess.Popen(["mihomo", "-d", "/data", "-f", "/data/config.json"])
     servers = []
     try:
+        for _ in range(100):
+            if core.poll() is not None:
+                raise RuntimeError("Proxy core exited during startup")
+            try:
+                client.request("GET", "/version")
+                client.set_mode(store.sources.get("core_mode", "rule"))
+                traffic.apply(traffic.plan(store.sources))
+                break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            raise RuntimeError("Proxy core startup timed out")
         for port, ingress in ((9091, False), (8099, True)):
             server = ThreadingHTTPServer(
-                ("0.0.0.0", port),
+                ("0.0.0.0" if ingress else "127.0.0.1", port),
                 handler_factory(store, secret, service, ingress=ingress),
             )
             server.daemon_threads = True
             servers.append(server)
             threading.Thread(target=server.serve_forever, daemon=True).start()
+
+        def reconcile():
+            while core.poll() is None:
+                with store.lock:
+                    traffic.refresh_inventory()
+                    if store.sources.get(
+                        "traffic_mode"
+                    ) == "selected" and store.sources.get("selected_apps"):
+                        try:
+                            plan = traffic.plan(store.sources)
+                            if plan != traffic.state:
+                                traffic.apply(plan)
+                        except (OSError, ValueError):
+                            service.record(
+                                "error", "应用网络地址同步失败，请检查透明代理状态"
+                            )
+                time.sleep(15)
+
+        threading.Thread(target=reconcile, daemon=True).start()
 
         def stop(_signum, _frame):
             core.terminate()
@@ -314,6 +510,7 @@ def main():
         signal.signal(signal.SIGINT, stop)
         raise SystemExit(core.wait())
     finally:
+        traffic.cleanup()
         if core.poll() is None:
             core.terminate()
             try:

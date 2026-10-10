@@ -43,7 +43,7 @@ class RoutingSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         return {
-            "experimental_routing": self.config.get("experimental_routing", False),
+            "experimental_routing": bool(self.policy.targets),
             "coverage": "aiohttp requests with HA config-entry task context only",
             "counts_reset_on_reload": True,
             "targets": {

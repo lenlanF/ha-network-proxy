@@ -1,11 +1,15 @@
 import os
 import ssl
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-CORE = Path(os.environ.get("MIHOMO_BINARY", Path(__file__).resolve().parents[1] / ".tools" / "mihomo-windows-amd64-v1.exe"))
+CORE = Path(
+    os.environ.get(
+        "MIHOMO_BINARY",
+        Path(__file__).resolve().parents[1] / ".tools" / "mihomo-windows-amd64-v1.exe",
+    )
+)
 
 
 @unittest.skipUnless(
@@ -37,7 +41,7 @@ class RealCoreTests(unittest.TestCase):
         self.assertIn("CONNECT example.com:80", self.fixture.targets)
         self.assertIn("/plain", self.fixture.targets)
         self.assertIn("CONNECT example.com:443", self.fixture.targets)
-        self.assertEqual(self.fixture.service.status()["current"], "LAN")
+        self.assertEqual(self.fixture.service.status()["current"], "lan")
 
     def test_authenticated_socks5_http_and_https(self):
         self.fixture.set_lan("socks5")
@@ -56,9 +60,16 @@ class RealCoreTests(unittest.TestCase):
     def test_real_diagnostic_auth_and_verified_tls_targets(self):
         self.fixture.set_lan("http")
         original = self.fixture.service.test
-        with patch.object(self.fixture.service, "test", side_effect=lambda target: original(
-            target, ssl_context=ssl.create_default_context() if "gstatic" in target else self.fixture.ssl_context
-        )):
+        with patch.object(
+            self.fixture.service,
+            "test",
+            side_effect=lambda target: original(
+                target,
+                ssl_context=ssl.create_default_context()
+                if "gstatic" in target
+                else self.fixture.ssl_context,
+            ),
+        ):
             result = self.fixture.service.diagnose()
         self.assertTrue(result["checks"][0]["ok"])
         # One request uses the system CA store and must reject the local test
@@ -70,24 +81,66 @@ class RealCoreTests(unittest.TestCase):
         self.assertEqual(len(rejected["checks"]), 1)
         self.assertEqual(rejected["checks"][0]["code"], "proxy_auth_required")
 
-    def test_subscription_load_refresh_and_node_switch(self):
+    def test_subscription_load_refresh_and_source_switch(self):
         self.fixture.store.update(
             {
                 "subscription_url": f"http://127.0.0.1:{self.fixture.subscription_port}/subscription",
                 "lan_host": "",
                 "lan_username": "",
                 "lan_password": "",
+                "outlet_source": "subscription",
             }
         )
-        for _ in range(50):
-            if len(self.fixture.service.status()["nodes"]) == 2:
-                break
-            time.sleep(0.1)
-        self.fixture.service.select("Fixture-B")
+        self.assertEqual(len(self.fixture.service.status()["outlets"]), 2)
+        self.assertNotIn("nodes", self.fixture.service.status())
+        self.fixture.service.select("subscription")
         self.fixture.service.refresh()
-        self.assertEqual(self.fixture.service.status()["current"], "Fixture-B")
+        self.assertEqual(self.fixture.service.status()["current"], "subscription")
         self.assertEqual(
             self.fixture.service.test("http://example.com/subscription")["status"], 200
         )
         self.assertIn("CONNECT example.com:80", self.fixture.targets)
         self.assertIn("/subscription", self.fixture.targets)
+
+    def test_full_subscription_override_and_bad_group_roll_back_without_losing_outlet(
+        self,
+    ):
+        self.fixture.store.update(
+            {
+                "subscription_url": f"http://127.0.0.1:{self.fixture.subscription_port}/subscription",
+                "outlet_source": "subscription",
+                "extension_yaml": "append-rules:\n  - DOMAIN,override.test,FixturePolicy",
+            }
+        )
+        rules = self.fixture.store.config(self.fixture.store.sources)["rules"]
+        self.assertEqual(rules[-1], "MATCH,REJECT")
+        self.assertEqual(rules[-2], "DOMAIN,override.test,FixturePolicy")
+        self.assertEqual(
+            self.fixture.service.test("http://override.test/preserved-policy")[
+                "status"
+            ],
+            200,
+        )
+        from subscription import ConfigError
+
+        with self.assertRaises(ConfigError):
+            self.fixture.store.update(
+                {"extension_yaml": "proxy-groups:\n  - name: Missing\n    type: select"}
+            )
+        self.assertEqual(
+            self.fixture.service.test("http://example.com/after-rejected-save")[
+                "status"
+            ],
+            200,
+        )
+
+    def test_global_mode_selects_managed_outlet_instead_of_direct(self):
+        self.fixture.set_lan("http")
+        self.fixture.store.update({"core_mode": "global"})
+        self.assertEqual(
+            self.fixture.client.request("GET", "/proxies/GLOBAL")["now"],
+            "NETWORK_PROXY_OUTLET",
+        )
+        self.assertEqual(
+            self.fixture.service.test("http://example.com/global")["status"], 200
+        )

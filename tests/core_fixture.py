@@ -59,7 +59,11 @@ class Fixture:
         self.targets = []
         self.process = None
         self.log = None
-        self.exe = Path(os.environ.get("MIHOMO_BINARY", ROOT / ".tools" / "mihomo-windows-amd64-v1.exe"))
+        self.exe = Path(
+            os.environ.get(
+                "MIHOMO_BINARY", ROOT / ".tools" / "mihomo-windows-amd64-v1.exe"
+            )
+        )
         self.secret = "fixture-secret-at-least-16"
 
     def start_server(self, server):
@@ -240,7 +244,23 @@ class Fixture:
                     }
                     for name in ("Fixture-A", "Fixture-B")
                 ]
-                body = json.dumps({"proxies": proxies}).encode()
+                body = json.dumps(
+                    {
+                        "proxies": proxies,
+                        "proxy-groups": [
+                            {
+                                "name": "FixturePolicy",
+                                "type": "select",
+                                "proxies": ["Fixture-B", "Fixture-A"],
+                            }
+                        ],
+                        "rules": [
+                            "DOMAIN-SUFFIX,example.com,FixturePolicy",
+                            "DOMAIN-SUFFIX,gstatic.com,FixturePolicy",
+                            "MATCH,REJECT",
+                        ],
+                    }
+                ).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -270,6 +290,9 @@ class Fixture:
                 "proxy_password": "outlet-password",
             },
             lambda config: self.client.reload(config_for_test(config)),
+            validator=lambda config: manager.validate_mihomo(
+                self.directory, config_for_test(config), str(self.exe)
+            ),
         )
         config = config_for_test(self.store.config({}))
         path = self.directory / "config.json"
@@ -304,6 +327,7 @@ class Fixture:
                 "lan_type": protocol,
                 "lan_username": "lan-user",
                 "lan_password": "lan-password",
+                "outlet_source": "lan",
             }
         )
 

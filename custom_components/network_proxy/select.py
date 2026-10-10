@@ -10,7 +10,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class ProxySelect(CoordinatorEntity, SelectEntity):
-    _attr_name = "Network Proxy Node"
+    _attr_name = "Network Proxy Outlet"
 
     def __init__(self, runtime, entry_id):
         super().__init__(runtime["coordinator"])

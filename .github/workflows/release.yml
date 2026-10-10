@@ -125,4 +125,3 @@ jobs:
             gh release create "v$VERSION" --target "$GITHUB_SHA" --prerelease --title "Network Proxy $VERSION preview" --notes-file RELEASE_NOTES.md
           fi
           gh release upload "v$VERSION" release/* --clobber
-

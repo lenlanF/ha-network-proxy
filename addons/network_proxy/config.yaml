@@ -1,5 +1,5 @@
 name: Network Proxy
-version: "0.3.2"
+version: "0.4.0"
 image: ghcr.io/lenlanf/ha-network-proxy-{arch}
 url: https://github.com/lenlanF/ha-network-proxy
 slug: network_proxy
@@ -9,29 +9,16 @@ startup: services
 boot: auto
 ingress: true
 ingress_port: 8099
+host_network: true
+hassio_api: true
+hassio_role: default
+privileged: [NET_ADMIN, NET_RAW]
+devices: [/dev/net/tun]
+breaking_versions: ["0.4.0"]
+stage: experimental
 panel_icon: mdi:network-outline
 panel_title: Network Proxy
-ports:
-  7890/tcp: 7890
-  9090/tcp: null
-  9091/tcp: null
 options:
-  subscription_url: ""
   controller_secret: ""
-  lan_host: ""
-  lan_port: 7890
-  lan_type: http
-  lan_username: ""
-  lan_password: ""
-  proxy_username: ""
-  proxy_password: ""
 schema:
-  subscription_url: str
   controller_secret: password
-  lan_host: str
-  lan_port: port
-  lan_type: list(http|socks5)
-  lan_username: str
-  lan_password: password
-  proxy_username: str
-  proxy_password: password
