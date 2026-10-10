@@ -59,7 +59,7 @@ async def discover(cidr):
         *(
             probe(host, port)
             for host in network.hosts()
-            for port in (7890, 7891, 1080, 8080)
+            for port in (7890, 7891, 7893, 1080, 8080)
         )
     )
     return sorted({result for result in results if result})

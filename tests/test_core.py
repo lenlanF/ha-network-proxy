@@ -3,6 +3,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -49,6 +50,44 @@ class ConfigTests(unittest.TestCase):
         for network in ("8.8.8.0/24", "192.168.0.0/16", "127.0.0.0/24", "fc00::/120"):
             with self.assertRaises(ValueError):
                 asyncio.run(discover(network))
+
+    def test_openclash_mixed_port_discovery_requires_proxy_handshake(self):
+        async def check():
+            async def serve(reader, writer):
+                try:
+                    prefix = await reader.readexactly(3)
+                    if prefix == b"\x05\x01\x00":
+                        writer.write(b"\x05\xff")
+                    else:
+                        await reader.readuntil(b"\r\n\r\n")
+                        writer.write(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+                    await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            server = await asyncio.start_server(serve, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            open_connection = asyncio.open_connection
+
+            async def route(host, candidate):
+                if host != "192.168.68.15" or candidate != 7893:
+                    raise ConnectionRefusedError
+                return await open_connection("127.0.0.1", port)
+
+            async with server:
+                for name, path in (
+                    ("app_discovery_test", "addons/network_proxy/discovery.py"),
+                    ("integration_discovery_test", "custom_components/network_proxy/discovery.py"),
+                ):
+                    scanner = load(name, path)
+                    with patch("asyncio.open_connection", side_effect=route):
+                        self.assertEqual(
+                            await scanner.discover("192.168.68.15/32"),
+                            ["http://192.168.68.15:7893"],
+                        )
+
+        asyncio.run(check())
 
 
 if __name__ == "__main__":
