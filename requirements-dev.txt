@@ -1,0 +1,5 @@
+aiohttp>=3.12,<4
+voluptuous>=0.15,<1
+ruff>=0.17,<1
+cryptography>=45,<51
+playwright>=1.60,<2

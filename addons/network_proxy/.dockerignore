@@ -1,0 +1,6 @@
+__pycache__
+*.pyc
+config.yaml
+CHANGELOG.md
+DOCS.md
+README.md

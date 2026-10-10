@@ -1,0 +1,126 @@
+name: Test and publish HA images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Read and verify release metadata
+        id: meta
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version: "\([^"]*\)"/\1/p' addons/network_proxy/config.yaml)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/$OWNER/ha-network-proxy-${{ matrix.arch }}"
+          grep -Fx "image: ghcr.io/$OWNER/ha-network-proxy-{arch}" addons/network_proxy/config.yaml
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build native image for verification
+        uses: docker/build-push-action@v6
+        with:
+          context: addons/network_proxy
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+          build-args: |
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            BUILD_ARCH=${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Home Assistant subscription and LAN proxy application
+      - name: Test application and real Mihomo protocols
+        shell: bash
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p .tools
+          CID=$(docker create "$IMAGE")
+          docker cp "$CID":/usr/local/bin/mihomo .tools/mihomo
+          docker rm "$CID"
+          chmod +x .tools/mihomo
+          docker run --rm --entrypoint mihomo "$IMAGE" -v
+          docker run --rm --entrypoint python "$IMAGE" -c 'import ssl; assert ssl.get_default_verify_paths().cafile; import manager, service, generate, discovery'
+          python -m pip install -r requirements-dev.txt
+          ruff check addons custom_components tests tools
+          python -m compileall -q addons custom_components
+          MIHOMO_BINARY="$PWD/.tools/mihomo" python -m unittest discover -s tests -v
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish verified image and create offline archive
+        shell: bash
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          docker push "$IMAGE"
+          mkdir -p release
+          FILE="ha-network-proxy-$VERSION-${{ matrix.arch }}.tar.gz"
+          docker save "$IMAGE" | gzip > "release/$FILE"
+          cd release
+          sha256sum "$FILE" > "$FILE.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Package source and publish preview release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          python tools/package.py
+          VERSION=$(sed -n 's/^version: "\([^"]*\)"/\1/p' addons/network_proxy/config.yaml)
+          cp dist/*.zip dist/*.sha256 release/
+          if ! gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release create "v$VERSION" --target "$GITHUB_SHA" --prerelease --title "Network Proxy $VERSION preview" --notes-file RELEASE_NOTES.md
+          fi
+          gh release upload "v$VERSION" release/* --clobber

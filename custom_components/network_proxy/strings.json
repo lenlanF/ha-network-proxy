@@ -1,0 +1,77 @@
+{
+  "title": "Network Proxy",
+  "config": {
+    "step": {
+      "controller": {
+        "title": "连接 Network Proxy 插件",
+        "description": "先安装 Network Proxy 应用，并设置至少 16 字符的控制密钥。本地安装的应用可使用默认内部地址；从仓库安装时，请将主机名改为对应的应用内部名称。订阅与 LAN 代理在应用 Web 界面设置。",
+        "data": {
+          "controller_url": "控制 API 地址（更换地址需重新添加集成）",
+          "manager_url": "插件管理地址",
+          "secret": "控制 API 密钥",
+          "proxy_url": "HTTP 代理出口",
+          "proxy_username": "代理用户名",
+          "proxy_password": "代理密码"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接插件，或地址、密钥无效。控制 API 需包含 PROXY 节点组，管理端口需可访问。",
+      "invalid_network": "请输入最多 256 个地址的私有 IPv4 网段。",
+      "apply_failed": "插件未能应用设置。检查源地址、认证信息及插件状态。",
+      "missing_source": "请填写订阅 URL 或共享代理地址。",
+      "no_proxies": "未发现代理。可手动配置认证代理或非标准端口。",
+      "invalid_targets": "选中的集成不存在或已禁用，请重新选择。",
+      "target_conflict": "同一个集成实例不能分配给多个代理。"
+    },
+    "abort": {
+      "already_configured": "此控制 API 已配置。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "网络代理设置",
+        "menu_options": {
+          "application": "应用管理入口",
+          "routing": "选择需要代理的集成",
+          "connection": "连接设置"
+        }
+      },
+      "connection": {
+        "title": "连接设置",
+        "data": {
+          "controller_url": "控制 API 地址（更换地址需重新添加集成）",
+          "manager_url": "插件管理地址",
+          "secret": "控制 API 密钥",
+          "proxy_url": "HTTP 代理出口",
+          "proxy_username": "代理用户名",
+          "proxy_password": "代理密码"
+        }
+      },
+      "routing": {
+        "title": "选择需要代理的集成",
+        "description": "实验功能：仅捕获携带 HA 配置条目上下文的 aiohttp 请求。HTTPX、requests、原始套接字及丢失上下文的请求不受支持；勾选不代表整个集成已被覆盖。观察请求计数核验捕获情况。使用私有客户端钩子，禁用或卸载可恢复。重载选中集成可能短暂中断其服务。",
+        "data": {
+          "experimental_routing": "启用实验性按集成代理",
+          "targets": "需要使用代理的集成实例",
+          "bypass_local": "局域网、localhost 和 .local 地址直连",
+          "reload_targets": "保存时重载选中集成"
+        }
+      },
+      "application": {
+        "title": "应用管理",
+        "description": "从 HA 应用页面打开 Network Proxy 的 Web 界面，管理订阅、发现、节点和分流。可开启应用的侧边栏入口。本集成提供节点实体、订阅刷新和实验性按集成路由。"
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接插件，或地址、密钥无效。控制 API 需包含 PROXY 节点组，管理端口需可访问。",
+      "invalid_network": "请输入最多 256 个地址的私有 IPv4 网段。",
+      "apply_failed": "插件未能应用设置。检查源地址、认证信息及插件状态。",
+      "missing_source": "请填写订阅 URL 或共享代理地址。",
+      "no_proxies": "未发现代理。可手动配置认证代理或非标准端口。",
+      "invalid_targets": "选中的集成不存在或已禁用，请重新选择。",
+      "target_conflict": "同一个集成实例不能分配给多个代理。"
+    }
+  }
+}
