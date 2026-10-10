@@ -97,7 +97,7 @@ def main():
 
             page.get_by_role("button", name="诊断连接", exact=True).click()
             expect(page.locator("#diagnostic-results")).to_contain_text(
-                "上游代理握手 · example.com:443：成功"
+                "共享上游握手 · example.com:443：成功"
             )
             expect(page.locator("#diagnostic-results")).to_contain_text(
                 "https://example.com/：成功"
@@ -129,6 +129,7 @@ def main():
             page.reload()
             expect(page.locator("#current-node")).to_have_text("局域网共享代理")
             expect(page.locator("#lan-user")).to_have_value("lan-user")
+            page.locator("#profile-name").fill("UI 订阅")
             page.locator("#subscription-url").fill(
                 f"http://127.0.0.1:{fixture.subscription_port}/subscription"
             )
@@ -136,8 +137,9 @@ def main():
             page.locator("#extension-yaml").fill(
                 "append-rules:\n  - DOMAIN,override.test,FixturePolicy"
             )
-            page.get_by_role("button", name="保存代理配置", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("代理配置已拉取")
+            page.get_by_role("button", name="保存订阅", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("订阅已拉取")
+            page.get_by_role("button", name="使用 UI 订阅", exact=True).click()
             page.get_by_role("button", name="刷新状态", exact=True).click()
             expect(page.locator("#current-node")).to_have_text("订阅配置")
             expect(page.locator("#nodes .node")).to_have_count(2)
@@ -150,6 +152,66 @@ def main():
             expect(page.locator("#notice")).to_have_text("订阅已重新拉取并加载。")
             page.locator("#test-outlet").click()
             expect(page.locator("#notice")).to_contain_text("HTTP 200")
+            page.get_by_role("button", name="刷新策略组", exact=True).click()
+            expect(
+                page.get_by_role("button", name="刷新策略组", exact=True)
+            ).to_be_enabled()
+            policy = page.locator(".policy-row").filter(
+                has=page.get_by_label("策略组 FixturePolicy", exact=True)
+            )
+            policy.get_by_role("combobox").select_option("Fixture-A")
+            policy.get_by_role("button", name="选择", exact=True).click()
+            expect(page.locator("#notice")).to_have_text("策略组选择已保存。")
+            assert (
+                fixture.store.snapshot.get("selections", {}).get("FixturePolicy")
+                == "Fixture-A"
+            ), fixture.store.snapshot.get("selections")
+            page.get_by_role("button", name="查看 / 编辑 UI 订阅", exact=True).click()
+            expect(page.locator("#config-yaml")).to_contain_text("")
+            expect(page.locator("#config-yaml")).to_have_value(
+                __import__("re").compile("FixturePolicy")
+            )
+            original_yaml = page.locator("#config-yaml").input_value()
+            page.locator("#config-yaml").fill("proxy-groups: [invalid]")
+            page.get_by_role("button", name="校验并保存编辑", exact=True).click()
+            expect(page.locator("#notice")).to_have_class("notice error")
+            page.locator("#config-yaml").fill(original_yaml)
+            page.get_by_role("button", name="校验并保存编辑", exact=True).click()
+            expect(page.locator("#notice")).to_have_text("本地编辑副本已校验并保存。")
+            page.get_by_role("button", name="使用原生配置", exact=True).click()
+            expect(page.locator("#editor-mode")).to_contain_text("原生配置")
+            assert (
+                fixture.store.snapshot.get("selections", {}).get("FixturePolicy")
+                == "Fixture-A"
+            ), fixture.store.snapshot.get("selections")
+            page.get_by_role("button", name="新增订阅", exact=True).click()
+            page.locator("#profile-name").fill("第二份 UI 订阅")
+            page.locator("#subscription-url").fill(
+                f"http://127.0.0.1:{fixture.subscription_port}/subscription"
+            )
+            page.get_by_role("button", name="保存订阅", exact=True).click()
+            expect(page.locator("#profile-list .profile-row")).to_have_count(2)
+            page.get_by_role("button", name="使用 第二份 UI 订阅", exact=True).click()
+            expect(page.locator("#notice")).to_be_visible()
+            expect(page.locator("#notice")).to_have_text("订阅设置已保存。")
+            expect(page.get_by_label("策略组 FixturePolicy", exact=True)).to_have_value(
+                "Fixture-B"
+            )
+            page.get_by_role("button", name="使用 UI 订阅", exact=True).click()
+            expect(page.locator("#notice")).to_be_visible()
+            expect(page.locator("#notice")).to_have_text("订阅设置已保存。")
+            expect(page.get_by_label("策略组 FixturePolicy", exact=True)).to_have_value(
+                "Fixture-A"
+            )
+            page.locator("#proxy-toggle").click()
+            expect(page.locator("#core-state")).to_have_text("仅管理模式")
+            expect(page.locator("#test-outlet")).to_be_disabled()
+            page.locator("#overview").screenshot(
+                path=str(output / "management-only.png")
+            )
+            page.locator("#proxy-toggle").click()
+            expect(page.locator("#core-state")).to_have_text("内核运行中")
+            page.locator("#policies").screenshot(path=str(output / "policies.png"))
             page.locator("#share-enabled").check()
             page.get_by_role("button", name="保存共享设置", exact=True).click()
             expect(page.locator("#notice")).to_have_text("共享设置已保存。")
@@ -214,6 +276,9 @@ def main():
             fixture.store.sources["extension_yaml"] = (
                 "proxy-groups:\n  - name: Broken\n    type: select"
             )
+            fixture.store.sources["subscriptions"][0]["extension_yaml"] = (
+                fixture.store.sources["extension_yaml"]
+            )
             fixture.store.prepare_or_recover()
             fixture.store.reload_config(fixture.store.runtime_config)
             page.reload()
@@ -224,9 +289,10 @@ def main():
             page.screenshot(path=str(output / "startup-recovery-mobile.png"))
             page.set_viewport_size({"width": 1440, "height": 1000})
             page.screenshot(path=str(output / "startup-recovery.png"))
+            page.get_by_role("button", name="修改 UI 订阅", exact=True).click()
             page.locator("#extension-yaml").fill("")
-            page.get_by_role("button", name="保存代理配置", exact=True).click()
-            expect(page.locator("#notice")).to_contain_text("代理配置已拉取")
+            page.get_by_role("button", name="保存订阅", exact=True).click()
+            expect(page.locator("#notice")).to_contain_text("订阅已拉取")
             expect(page.locator("#recovery-note")).to_be_hidden()
             expect(page.locator("#current-node")).to_have_text("订阅配置")
             expect(page.locator("#traffic-state")).to_have_text("显式出口")

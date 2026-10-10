@@ -15,9 +15,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
+import yaml
 from discovery import discover
 from generate import ROOT_GROUP, source_choice
-from subscription import ConfigError
+from profiles import selected_document
+from subscription import ConfigError, compose
 
 
 def failure_code(error):
@@ -28,6 +30,8 @@ def failure_code(error):
         error = error.reason
     if isinstance(error, ssl.SSLCertVerificationError):
         return "tls_certificate_error"
+    if isinstance(error, ssl.SSLEOFError):
+        return "tls_connection_closed"
     if isinstance(error, ssl.SSLError):
         return "tls_error"
     if isinstance(error, TimeoutError):
@@ -76,6 +80,34 @@ class CoreClient:
             {"payload": json.dumps(config, ensure_ascii=False)},
         )
         self.set_mode(config["mode"])
+        if not config.get("mixed-port"):
+            self.request("DELETE", "/connections")
+
+    def restore_selections(self, config, selections):
+        proxies = self.request("GET", "/proxies")["proxies"]
+        for group in config.get("proxy-groups", []) + [{"name": "GLOBAL"}]:
+            name = group["name"]
+            current = proxies.get(name, {})
+            children = current.get("all", [])
+            if name == ROOT_GROUP or not children:
+                continue
+            chosen = selections.get(name)
+            if (
+                current.get("type") in ("URLTest", "Fallback", "LoadBalance")
+                and chosen not in children
+            ):
+                self.request("DELETE", "/proxies/" + quote(name, safe=""))
+                continue
+            if chosen not in children:
+                chosen = (
+                    children[0]
+                    if current.get("type") == "Selector" and name != "GLOBAL"
+                    else None
+                )
+            if chosen and current.get("now") != chosen:
+                self.request(
+                    "PUT", "/proxies/" + quote(name, safe=""), {"name": chosen}
+                )
 
     def set_mode(self, mode):
         if mode == "global":
@@ -89,7 +121,7 @@ class Service:
         self.events_lock = threading.Lock()
         self.integrations = []
         self.report_time = 0
-        self.last_subscription_attempt = 0
+        self.last_subscription_attempt = {}
         self.record("info", "代理管理服务已启动")
 
     def record(self, level, message):
@@ -123,6 +155,7 @@ class Service:
             config = self.store.runtime_config or self.store.config(sources)
             snapshot = dict(self.store.snapshot)
         current = source_choice(sources)
+        enabled = sources.get("proxy_enabled", True)
         outlets = [
             {
                 "name": "subscription",
@@ -146,13 +179,18 @@ class Service:
             "has_subscription": bool(sources.get("subscription_url")),
             "has_lan": bool(sources.get("lan_host")),
             "recovery_error": recovery,
+            "proxy_enabled": enabled,
+            "active_subscription": sources.get("active_subscription", ""),
             "configured": not recovery
             and any(item["name"] == current and item["ready"] for item in outlets),
             "traffic_scope": "explicit"
-            if recovery
+            if recovery or not enabled
             else sources.get("traffic_mode", "explicit"),
             "core_mode": config["mode"],
-            "share_enabled": False if recovery else sources.get("share_enabled", False),
+            "core_mode_setting": sources.get("core_mode", "native"),
+            "share_enabled": False
+            if recovery or not enabled
+            else sources.get("share_enabled", False),
             "subscription": {
                 "fetched_at": snapshot.get("fetched_at"),
                 "rules": len(config.get("rules", [])),
@@ -196,28 +234,187 @@ class Service:
         self.record("info", "订阅已重新拉取、校验并加载")
         return {"refreshed": True}
 
+    def subscriptions(self):
+        with self.store.lock:
+            active = self.store.sources.get("active_subscription")
+            return {
+                "active_id": active,
+                "profiles": [
+                    {
+                        **profile,
+                        "active": profile["id"] == active,
+                        "fetched_at": self.store.snapshots.get(profile["id"], {}).get(
+                            "fetched_at"
+                        ),
+                        "ready": bool(
+                            self.store.snapshots.get(profile["id"], {}).get("document")
+                        ),
+                    }
+                    for profile in self.store.sources.get("subscriptions", [])
+                ],
+            }
+
+    def subscription_action(self, operation, data):
+        identity = data.get("id")
+        if operation == "save":
+            identity = self.store.save_subscription(data)
+        elif operation == "delete":
+            self.store.delete_subscription(identity)
+        elif operation == "activate":
+            if not any(
+                item["id"] == identity
+                for item in self.store.sources.get("subscriptions", [])
+            ):
+                raise ConfigError("profile_not_found")
+            self.store.update(
+                {"active_subscription": identity, "outlet_source": "subscription"}
+            )
+        elif operation == "refresh":
+            if not any(
+                item["id"] == identity
+                for item in self.store.sources.get("subscriptions", [])
+            ):
+                raise ConfigError("profile_not_found")
+            self.store.update({}, refresh_ids=[identity])
+        elif operation == "edit":
+            self.store.edit_subscription(
+                identity, data.get("yaml", ""), native=data.get("native") is True
+            )
+        else:
+            raise ValueError("Unknown operation")
+        self.record("info", "订阅配置已校验并保存")
+        return {"saved": True, "id": identity}
+
+    def subscription_config(self, identity, view):
+        with self.store.lock:
+            profile = next(
+                (
+                    item
+                    for item in self.store.sources.get("subscriptions", [])
+                    if item["id"] == identity
+                ),
+                None,
+            )
+            snapshot = self.store.snapshots.get(identity, {})
+            if profile is None or not snapshot.get("document"):
+                raise ConfigError("profile_not_ready")
+            if view == "original":
+                text = snapshot.get("original_yaml") or yaml.safe_dump(
+                    dict(snapshot["document"]), allow_unicode=True, sort_keys=False
+                )
+            elif view == "editable":
+                text = (
+                    snapshot.get("edited_yaml")
+                    or snapshot.get("original_yaml")
+                    or yaml.safe_dump(
+                        dict(snapshot["document"]), allow_unicode=True, sort_keys=False
+                    )
+                )
+            elif view == "effective":
+                # Excludes application controller/outlet secrets and network listeners.
+                document = selected_document(profile, snapshot)
+                text = yaml.safe_dump(
+                    compose(
+                        document, profile.get("extension_yaml", ""), namespace=identity
+                    ),
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+            else:
+                raise ValueError("Unknown view")
+            return {
+                "id": identity,
+                "view": view,
+                "yaml": text,
+                "config_mode": profile.get("config_mode", "native"),
+            }
+
+    def policies(self):
+        raw = self.core.request("GET", "/proxies")["proxies"]
+        groups, nodes = [], []
+        for name, item in raw.items():
+            if name == ROOT_GROUP:
+                continue
+            history = item.get("history") or []
+            record = {
+                "name": name,
+                "type": item.get("type", ""),
+                "alive": item.get("alive"),
+                "delay": history[-1].get("delay") if history else None,
+            }
+            if "all" in item:
+                groups.append(
+                    {
+                        **record,
+                        "current": item.get("now", ""),
+                        "members": item["all"],
+                        "selectable": item.get("type")
+                        in ("Selector", "URLTest", "Fallback", "LoadBalance"),
+                        "automatic": item.get("type") != "Selector",
+                    }
+                )
+            else:
+                nodes.append(record)
+        return {"groups": groups, "nodes": nodes}
+
+    def select_policy(self, group, name, *, automatic=False):
+        with self.store.lock:
+            raw = self.core.request("GET", "/proxies")["proxies"]
+            item = raw.get(group, {}) if isinstance(group, str) else {}
+            if group == ROOT_GROUP or item.get("type") not in (
+                "Selector",
+                "URLTest",
+                "Fallback",
+                "LoadBalance",
+            ):
+                raise ConfigError("group_not_selectable")
+            path = "/proxies/" + quote(group, safe="")
+            if automatic and item.get("type") != "Selector":
+                self.core.request("DELETE", path)
+                try:
+                    self.store.save_selection(group, "")
+                except Exception:
+                    if item.get("now"):
+                        self.core.request("PUT", path, {"name": item["now"]})
+                    raise
+            elif isinstance(name, str) and name in item.get("all", []):
+                self.core.request("PUT", path, {"name": name})
+                try:
+                    self.store.save_selection(group, name)
+                except Exception:
+                    if item.get("now"):
+                        self.core.request("PUT", path, {"name": item["now"]})
+                    raise
+            else:
+                raise ConfigError("invalid_group_member")
+            self.record("info", "策略组选择已更新")
+            return {"selected": True}
+
     def auto_refresh(self):
         with self.store.lock:
             if self.store.recovery_error:
                 return
-            url = self.store.sources.get("subscription_url")
-            interval = self.store.sources.get("subscription_interval", 3600)
-            fetched = self.store.snapshot.get("fetched_at", 0)
+            profiles = list(self.store.sources.get("subscriptions", []))
         now = time.time()
-        if (
-            not url
-            or not interval
-            or now - fetched < interval
-            or now - self.last_subscription_attempt < 300
-        ):
-            return
-        self.last_subscription_attempt = now
-        try:
-            self.refresh()
-        except (OSError, ValueError, http.client.HTTPException):
-            self.record(
-                "warning", "订阅自动更新失败，继续保留上次可用配置；五分钟后重试"
-            )
+        for profile in profiles:
+            identity = profile["id"]
+            interval = profile.get("interval", 3600)
+            with self.store.lock:
+                fetched = self.store.snapshots.get(identity, {}).get("fetched_at", 0)
+            if (
+                not interval
+                or now - fetched < interval
+                or now - self.last_subscription_attempt.get(identity, 0) < 300
+            ):
+                continue
+            self.last_subscription_attempt[identity] = now
+            try:
+                self.store.update({}, refresh_ids=[identity])
+                self.record("info", "订阅自动更新成功；本地编辑副本已保留")
+            except (OSError, ValueError, http.client.HTTPException):
+                self.record(
+                    "warning", "订阅自动更新失败，保留上次可用配置；五分钟后重试"
+                )
 
     def scan(self, cidr):
         results = asyncio.run(discover(cidr))
@@ -237,16 +434,25 @@ class Service:
         return self.core.request("GET", path)
 
     def test(
-        self, test_url="https://www.gstatic.com/generate_204", *, ssl_context=None
+        self,
+        test_url="https://www.gstatic.com/generate_204",
+        *,
+        ssl_context=None,
+        proxy_url=None,
+        auth=None,
     ):
         if self.store.recovery_error:
             raise ConfigError("startup_recovery")
+        if proxy_url is None and not self.store.sources.get("proxy_enabled", True):
+            raise ConfigError("proxy_disabled")
         # Test target is fixed by the server, never supplied by browser input.
-        parsed = urlsplit(self.proxy_url)
+        parsed = urlsplit(proxy_url or self.proxy_url)
         user, password = (
             self.store.sources.get("proxy_username"),
             self.store.sources.get("proxy_password"),
         )
+        if auth is not None:
+            user, password = auth
         proxy = f"{parsed.scheme}://{parsed.netloc}"
         opener = build_opener(
             ForcedProxyHandler({"http": proxy, "https": proxy}),
@@ -316,9 +522,13 @@ class Service:
                 # Existing integration hooks retain their policy on HTTP errors.
                 raise ConfigError("startup_recovery")
             source = self.store.sources
+            enabled = source.get("proxy_enabled", True)
             return {
-                "traffic_mode": source.get("traffic_mode", "explicit"),
-                "targets": source.get("selected_integrations", []),
+                "proxy_enabled": enabled,
+                "traffic_mode": source.get("traffic_mode", "explicit")
+                if enabled
+                else "explicit",
+                "targets": source.get("selected_integrations", []) if enabled else [],
                 "proxy_url": self.proxy_url,
                 "proxy_username": source.get("proxy_username", ""),
                 "proxy_password": source.get("proxy_password", ""),
@@ -370,10 +580,23 @@ class Service:
                     response.close()
                 connection.close()
             results.append(result)
-            if result["code"] == "proxy_auth_required":
+            if (
+                result["code"] == "proxy_auth_required"
+                and source_choice(source) == "lan"
+            ):
                 self.record("warning", "上游代理认证诊断返回 HTTP 407")
                 return {"checks": results, "scope": "proxy_outlet_only"}
         for target in ("https://www.gstatic.com/generate_204", "https://example.com/"):
+            if not source.get("proxy_enabled", True):
+                results.append(
+                    {
+                        "stage": "outlet_https",
+                        "target": target,
+                        "ok": False,
+                        "code": "proxy_disabled",
+                    }
+                )
+                continue
             try:
                 result = self.test(target)
                 results.append(
@@ -396,4 +619,8 @@ class Service:
                     }
                 )
         self.record("info", "代理诊断完成，结果仅包含固定目标及错误分类")
-        return {"checks": results, "scope": "proxy_outlet_only"}
+        return {
+            "checks": results,
+            "scope": "proxy_outlet_only",
+            "active_outlet": source_choice(source),
+        }

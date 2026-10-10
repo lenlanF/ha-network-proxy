@@ -126,9 +126,10 @@ class ApplicationTests(unittest.TestCase):
         self.store.sources.update(
             subscription_url="https://fixture.test/sub", subscription_interval=300
         )
+        self.store.sources = manager.normalize(self.store.sources)
         self.store.snapshot["fetched_at"] = 0
         with patch.object(
-            self.service, "refresh", side_effect=ValueError("failure with token")
+            self.store, "update", side_effect=ValueError("failure with token")
         ) as refresh:
             self.service.auto_refresh()
             self.service.auto_refresh()
@@ -136,8 +137,8 @@ class ApplicationTests(unittest.TestCase):
         self.assertNotIn(
             "failure with token", json.dumps(self.service.event_snapshot())
         )
-        self.store.sources["subscription_interval"] = 0
-        with patch.object(self.service, "refresh") as refresh:
+        self.store.sources["subscriptions"][0]["interval"] = 0
+        with patch.object(self.store, "update") as refresh:
             self.service.auto_refresh()
             refresh.assert_not_called()
 

@@ -5,7 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import voluptuous as vol
 
@@ -82,6 +82,45 @@ class ConnectionFormTests(unittest.TestCase):
         flow.validate_connection(values)
         for key in ("controller_url", "manager_url", "proxy_url"):
             self.assertIn("127.0.0.1", values[key])
+
+
+class ConnectionValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_managed_application_connects_without_proxy_named_group_even_when_disabled(
+        self,
+    ):
+        values = {**flow.CONNECTION_DEFAULTS, "secret": "fixture-secret-at-least-16"}
+        controller = Mock(status=AsyncMock(return_value={"version": "v1.19.12"}))
+        manager = Mock(
+            health=AsyncMock(
+                return_value={
+                    "version": "0.5.0",
+                    "application": "network_proxy",
+                    "features": ["proxy_switch"],
+                }
+            ),
+            status=AsyncMock(return_value={"proxy_enabled": False}),
+        )
+        with (
+            patch.object(flow, "async_get_clientsession", return_value=object()),
+            patch.object(flow, "Controller", return_value=controller),
+            patch.object(flow, "Manager", return_value=manager),
+        ):
+            await flow.validate_controller(object(), values)
+        controller.status.assert_awaited_once()
+        manager.status.assert_awaited_once()
+
+    async def test_old_or_unrelated_manager_is_rejected(self):
+        values = {**flow.CONNECTION_DEFAULTS, "secret": "fixture-secret-at-least-16"}
+        with (
+            patch.object(flow, "async_get_clientsession", return_value=object()),
+            patch.object(flow, "Controller", return_value=Mock(status=AsyncMock())),
+            patch.object(
+                flow,
+                "Manager",
+                return_value=Mock(health=AsyncMock(return_value={"version": "0.4.3"})),
+            ),self.assertRaises(ValueError)
+        ):
+            await flow.validate_controller(object(), values)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ COPY generate.py /generate.py
 COPY manager.py /manager.py
 COPY service.py /service.py
 COPY discovery.py /discovery.py
-COPY subscription.py traffic.py /
+COPY subscription.py profiles.py traffic.py /
 COPY web /web
 COPY run.sh /run.sh
 RUN chmod +x /run.sh

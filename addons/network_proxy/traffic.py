@@ -116,6 +116,8 @@ class Traffic:
         )
 
     def plan(self, settings):
+        if not settings.get("proxy_enabled", True):
+            return {"scope": "explicit", "ips": [], "tun": False}
         scope = settings.get("traffic_mode", "explicit")
         if (
             settings.get("lan_host") in self.addresses

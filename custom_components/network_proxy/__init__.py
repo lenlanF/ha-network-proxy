@@ -16,7 +16,7 @@ from .routing import Policy, Router
 
 _LOGGER = logging.getLogger(__name__)
 _ROUTER = Router(current_entry.get)
-PLATFORMS = [Platform.SELECT, Platform.SENSOR, Platform.BUTTON]
+PLATFORMS = [Platform.SELECT, Platform.SENSOR, Platform.BUTTON, Platform.SWITCH]
 
 
 async def async_migrate_entry(hass, entry):
@@ -70,7 +70,8 @@ async def async_setup_entry(hass, entry):
             settings = await api.runtime()
             targets = (
                 set(settings["targets"])
-                if settings["traffic_mode"] == "selected"
+                if settings.get("proxy_enabled", True)
+                and settings["traffic_mode"] == "selected"
                 else set()
             )
             available = {
