@@ -440,6 +440,8 @@ def handler_factory(
                     self.respond(404, {"error": "not_found"})
                     return
                 self.respond(200, payload)
+            except ConfigError as error:
+                self.respond(503, {"error": error.code})
             except (OSError, ValueError, KeyError):
                 self.respond(503, {"error": "core_unavailable"})
 

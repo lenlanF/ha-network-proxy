@@ -3,14 +3,18 @@
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+from urllib.request import ProxyHandler, Request, build_opener
 
+from test_manager import manager
 from subscription import ConfigError
 from test_application import FakeCore, service_module
-from test_manager import manager
 
 
 class StartupRecoveryTests(unittest.TestCase):
@@ -110,6 +114,26 @@ class StartupRecoveryTests(unittest.TestCase):
                 with self.assertRaises(ConfigError) as result:
                     operation()
                 self.assertEqual(result.exception.code, "startup_recovery")
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0), manager.handler_factory(store, "x" * 24, service)
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                request = Request(
+                    f"http://127.0.0.1:{server.server_port}/integration/runtime",
+                    headers={"Authorization": "Bearer " + "x" * 24},
+                )
+                with self.assertRaises(HTTPError) as response:
+                    build_opener(ProxyHandler({})).open(request, timeout=2)
+                self.assertEqual(response.exception.code, 503)
+                self.assertEqual(
+                    json.load(response.exception)["error"], "startup_recovery"
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
             with patch.object(service, "refresh") as refresh:
                 service.auto_refresh()
                 refresh.assert_not_called()
