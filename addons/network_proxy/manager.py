@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from generate import generate, source_choice
 from subscription import ConfigError, fetch_document, url_digest
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 SOURCE_DEFAULTS = {
     "subscription_url": "",
     "subscription_interval": 3600,
@@ -124,6 +124,8 @@ class SettingsStore:
             reload_config,
         )
         self.lock = threading.Lock()
+        self.runtime_config = None
+        self.recovery_error = ""
         self.path = self.directory / "sources.json"
         self.snapshot_path = self.directory / "subscription.json"
         self.fetcher, self.validator, self.traffic = fetcher, validator, traffic
@@ -167,6 +169,9 @@ class SettingsStore:
             raise ValueError("Invalid source fields")
         with self.lock:
             sources = {**self.sources, **changes}
+            if self.recovery_error:
+                # A repair must not silently restore host routes or sharing.
+                sources.update(traffic_mode="explicit", share_enabled=False)
             old_identity = tuple(
                 self.sources.get(key, SOURCE_DEFAULTS[key])
                 for key in ("lan_host", "lan_port", "lan_type", "lan_username")
@@ -216,7 +221,7 @@ class SettingsStore:
                 if self.validator:
                     self.validator(candidate)
             new_config = self.config(sources, snapshot)
-            old_config = self.config(self.sources)
+            old_config = self.runtime_config or self.config(self.sources)
             if self.validator:
                 self.validator(new_config)
             new_plan = self.traffic.plan(sources) if self.traffic else None
@@ -244,6 +249,8 @@ class SettingsStore:
                 raise
             self.sources = dict(sources)
             self.snapshot = snapshot
+            self.runtime_config = new_config
+            self.recovery_error = ""
 
     def prepare(self):
         """Restore the last private snapshot without contacting the subscription."""
@@ -253,20 +260,69 @@ class SettingsStore:
             and source_choice(self.sources) == "subscription"
             and self.snapshot.get("url_hash") != url_digest(url)
         ):
-            self.snapshot = {
+            snapshot = {
                 "url_hash": url_digest(url),
                 "document": self.fetcher(url),
                 "fetched_at": int(time.time()),
             }
-            atomic_json(self.snapshot_path, self.snapshot)
+        else:
+            snapshot = self.snapshot
         if self.traffic:
             self.traffic.cleanup()
             self.traffic.plan(self.sources)
-        config = self.config(self.sources)
+        config = self.config(self.sources, snapshot)
         if self.validator:
             self.validator(config)
         atomic_json(self.directory / "config.json", config)
         atomic_json(self.path, self.sources)
+        atomic_json(self.snapshot_path, snapshot)
+        self.snapshot = snapshot
+        self.runtime_config = config
+
+    def prepare_or_recover(self):
+        """Keep the UI available after a rejected saved configuration."""
+        try:
+            self.prepare()
+        except ConfigError as error:
+            config = generate(
+                {
+                    "controller_secret": self.options["controller_secret"],
+                    "proxy_username": self.sources.get("proxy_username", ""),
+                    "proxy_password": self.sources.get("proxy_password", ""),
+                },
+                bootstrap=True,
+            )
+            if self.validator:
+                self.validator(config)
+            if self.traffic:
+                self.traffic.cleanup()
+            atomic_json(self.directory / "config.json", config)
+            self.runtime_config = config
+            self.recovery_error = error.code
+
+
+def validation_code(output):
+    """Classify private core output without returning any of its text."""
+    lines = output.splitlines()
+    errors = [
+        line
+        for line in lines
+        if re.search(r"level=(?:error|fatal)|\b(?:ERRO|FATA|ERROR|FATAL)\b", line)
+    ]
+    text = "\n".join(errors or lines).lower()
+    for code, fragments in (
+        ("permission", ("permission denied", "read-only file system")),
+        ("proxy_group", ("proxy group[", "proxy group ", "proxy-group")),
+        ("provider", ("proxy-provider", "rule-provider", "provider[")),
+        ("geodata", ("geoip", "geosite", "mmdb", "geodata", "metadb")),
+        ("rule", ("rules[", "rule[", "rule ", "proxy not found")),
+        ("dns", ("nameserver", "dns ", "dns:", "dns.")),
+        ("proxy", ("proxy[", "proxy ", "unsupported proxy type")),
+        ("yaml", ("yaml:", "unmarshal", "cannot parse")),
+    ):
+        if any(fragment in text for fragment in fragments):
+            return "core_validation_" + code
+    return "core_validation_failed"
 
 
 def validate_mihomo(directory, config, binary="mihomo"):
@@ -276,15 +332,19 @@ def validate_mihomo(directory, config, binary="mihomo"):
         json.dump(config, handle)
         path = Path(handle.name)
     try:
-        result = subprocess.run(
-            [binary, "-t", "-d", str(directory), "-f", str(path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=45,
-            check=False,
-        )
-        if result.returncode:
-            raise ConfigError("core_validation_failed")
+        with tempfile.TemporaryFile(dir=directory) as output:
+            result = subprocess.run(
+                [binary, "-t", "-d", str(directory), "-f", str(path)],
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                timeout=45,
+                check=False,
+            )
+            if result.returncode:
+                output.seek(0, os.SEEK_END)
+                output.seek(max(0, output.tell() - 65536))
+                code = validation_code(output.read().decode("utf-8", errors="replace"))
+                raise ConfigError(code)
     except subprocess.TimeoutExpired as error:
         raise ConfigError("core_validation_timeout") from error
     finally:
@@ -380,6 +440,8 @@ def handler_factory(
                     self.respond(404, {"error": "not_found"})
                     return
                 self.respond(200, payload)
+            except ConfigError as error:
+                self.respond(503, {"error": error.code})
             except (OSError, ValueError, KeyError):
                 self.respond(503, {"error": "core_unavailable"})
 
@@ -450,7 +512,7 @@ def handler_factory(
 
                 code = failure_code(error)
                 if service:
-                    service.record("error", f"操作失败：{code}；未记录认证信息")
+                    service.record("error", f"����ʧ�ܣ�{code}��δ��¼��֤��Ϣ")
                 self.respond(503, {"error": code})
             except KeyError:
                 self.respond(503, {"error": "core_incompatible"})
@@ -477,8 +539,18 @@ def main():
         validator=lambda config: validate_mihomo(directory, config),
         traffic=traffic,
     )
-    store.prepare()
+    store.prepare_or_recover()
     service = Service(store, client)
+    if store.recovery_error:
+        print(
+            "Network Proxy startup recovery: "
+            + store.recovery_error
+            + "; saved settings retained; transparent routing and sharing inactive",
+            flush=True,
+        )
+        service.record(
+            "error", "�������ñ��ܾ���" + store.recovery_error + "��������ҳ����������"
+        )
     core = subprocess.Popen(["mihomo", "-d", "/data", "-f", "/data/config.json"])
     servers = []
     try:
@@ -487,8 +559,9 @@ def main():
                 raise RuntimeError("Proxy core exited during startup")
             try:
                 client.request("GET", "/version")
-                client.set_mode(store.sources.get("core_mode", "rule"))
-                traffic.apply(traffic.plan(store.sources))
+                client.set_mode(store.runtime_config["mode"])
+                if not store.recovery_error:
+                    traffic.apply(traffic.plan(store.sources))
                 break
             except OSError:
                 time.sleep(0.2)
@@ -507,16 +580,18 @@ def main():
             while core.poll() is None:
                 with store.lock:
                     traffic.refresh_inventory()
-                    if store.sources.get(
-                        "traffic_mode"
-                    ) == "selected" and store.sources.get("selected_apps"):
+                    if (
+                        not store.recovery_error
+                        and store.sources.get("traffic_mode") == "selected"
+                        and store.sources.get("selected_apps")
+                    ):
                         try:
                             plan = traffic.plan(store.sources)
                             if plan != traffic.state:
                                 traffic.apply(plan)
                         except (OSError, ValueError):
                             service.record(
-                                "error", "应用网络地址同步失败，请检查透明代理状态"
+                                "error", "Ӧ�������ַͬ��ʧ�ܣ�����͸������״̬"
                             )
                 time.sleep(15)
 

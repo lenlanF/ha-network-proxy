@@ -86,7 +86,7 @@ class Service:
         self.integrations = []
         self.report_time = 0
         self.last_subscription_attempt = 0
-        self.record("info", "代理管理服务已启动")
+        self.record("info", "������������������")
 
     def record(self, level, message):
         with self.events_lock:
@@ -115,18 +115,19 @@ class Service:
         self.core.request("GET", "/proxies")["proxies"][ROOT_GROUP]
         with self.store.lock:
             sources = dict(self.store.sources)
-            config = self.store.config(sources)
+            recovery = self.store.recovery_error
+            config = self.store.runtime_config or self.store.config(sources)
             snapshot = dict(self.store.snapshot)
         current = source_choice(sources)
         outlets = [
             {
                 "name": "subscription",
-                "label": "订阅配置",
+                "label": "��������",
                 "ready": bool(sources.get("subscription_url") and snapshot),
             },
             {
                 "name": "lan",
-                "label": "局域网共享代理",
+                "label": "��������������",
                 "ready": bool(sources.get("lan_host")),
             },
         ]
@@ -140,12 +141,14 @@ class Service:
             ),
             "has_subscription": bool(sources.get("subscription_url")),
             "has_lan": bool(sources.get("lan_host")),
-            "configured": any(
-                item["name"] == current and item["ready"] for item in outlets
-            ),
-            "traffic_scope": sources.get("traffic_mode", "explicit"),
-            "core_mode": sources.get("core_mode", "rule"),
-            "share_enabled": sources.get("share_enabled", False),
+            "recovery_error": recovery,
+            "configured": not recovery
+            and any(item["name"] == current and item["ready"] for item in outlets),
+            "traffic_scope": "explicit"
+            if recovery
+            else sources.get("traffic_mode", "explicit"),
+            "core_mode": config["mode"],
+            "share_enabled": False if recovery else sources.get("share_enabled", False),
             "subscription": {
                 "fetched_at": snapshot.get("fetched_at"),
                 "rules": len(config.get("rules", [])),
@@ -170,27 +173,29 @@ class Service:
             ):
                 raise ConfigError("integration_unavailable")
         self.store.update(settings)
-        self.record("info", "配置已校验、保存并热加载")
+        self.record("info", "������У�顢���沢�ȼ���")
         return {"saved": True}
 
     def select(self, name):
-        aliases = {"订阅配置": "subscription", "局域网共享代理": "lan"}
+        aliases = {"��������": "subscription", "��������������": "lan"}
         name = aliases.get(name, name) if isinstance(name, str) else None
         if name not in ("subscription", "lan"):
             raise ValueError("Unknown outlet")
         self.store.update({"outlet_source": name})
-        self.record("info", "已切换代理来源")
+        self.record("info", "���л�������Դ")
         return {"selected": name}
 
     def refresh(self):
         if not self.store.sources.get("subscription_url"):
             raise ValueError("No subscription configured")
         self.store.update({}, refresh=True)
-        self.record("info", "订阅已重新拉取、校验并加载")
+        self.record("info", "������������ȡ��У�鲢����")
         return {"refreshed": True}
 
     def auto_refresh(self):
         with self.store.lock:
+            if self.store.recovery_error:
+                return
             url = self.store.sources.get("subscription_url")
             interval = self.store.sources.get("subscription_interval", 3600)
             fetched = self.store.snapshot.get("fetched_at", 0)
@@ -207,12 +212,12 @@ class Service:
             self.refresh()
         except (OSError, ValueError, http.client.HTTPException):
             self.record(
-                "warning", "订阅自动更新失败，继续保留上次可用配置；五分钟后重试"
+                "warning", "�����Զ�����ʧ�ܣ����������ϴο������ã�����Ӻ�����"
             )
 
     def scan(self, cidr):
         results = asyncio.run(discover(cidr))
-        self.record("info", f"局域网代理扫描完成，发现 {len(results)} 个入口")
+        self.record("info", f"����������ɨ����ɣ����� {len(results)} �����")
         return {"proxies": results}
 
     def delay(self, name):
@@ -230,6 +235,8 @@ class Service:
     def test(
         self, test_url="https://www.gstatic.com/generate_204", *, ssl_context=None
     ):
+        if self.store.recovery_error:
+            raise ConfigError("startup_recovery")
         # Test target is fixed by the server, never supplied by browser input.
         parsed = urlsplit(self.proxy_url)
         user, password = (
@@ -250,7 +257,7 @@ class Service:
             status = response.status
             response.read(1024)
         latency = round((time.monotonic() - started) * 1000)
-        self.record("info", "代理出口连通性测试成功")
+        self.record("info", "����������ͨ�Բ��Գɹ�")
         return {
             "status": status,
             "latency_ms": latency,
@@ -301,6 +308,9 @@ class Service:
     def runtime(self):
         # Loopback bearer API only. Never route this payload through Ingress.
         with self.store.lock:
+            if self.store.recovery_error:
+                # Existing integration hooks retain their policy on HTTP errors.
+                raise ConfigError("startup_recovery")
             source = self.store.sources
             return {
                 "traffic_mode": source.get("traffic_mode", "explicit"),
@@ -357,7 +367,7 @@ class Service:
                 connection.close()
             results.append(result)
             if result["code"] == "proxy_auth_required":
-                self.record("warning", "上游代理认证诊断返回 HTTP 407")
+                self.record("warning", "���δ�����֤��Ϸ��� HTTP 407")
                 return {"checks": results, "scope": "proxy_outlet_only"}
         for target in ("https://www.gstatic.com/generate_204", "https://example.com/"):
             try:
@@ -381,5 +391,5 @@ class Service:
                         "code": failure_code(error),
                     }
                 )
-        self.record("info", "代理诊断完成，结果仅包含固定目标及错误分类")
+        self.record("info", "���������ɣ�����������̶�Ŀ�꼰�������")
         return {"checks": results, "scope": "proxy_outlet_only"}
