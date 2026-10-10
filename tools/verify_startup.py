@@ -3,14 +3,17 @@
 import hashlib
 import json
 import os
+import socket
 import subprocess
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 
-def main():
+def verify_startup(ingress_port, environment):
     if os.environ.get("NP_ISOLATED_TEST") != "1":
         raise SystemExit("Run only in an isolated disposable Docker container")
     directory = Path("/data")
@@ -61,7 +64,9 @@ def main():
             return json.load(response)
 
     with (directory / "startup.log").open("w+") as log:
-        process = subprocess.Popen(["python", "/manager.py"], stdout=log, stderr=log)
+        process = subprocess.Popen(
+            ["python", "/manager.py"], stdout=log, stderr=log, env=environment
+        )
         try:
             for _ in range(100):
                 assert process.poll() is None, "Manager exited during recovery startup"
@@ -75,6 +80,14 @@ def main():
             assert status["recovery_error"] == "core_validation_proxy_group", status
             assert not status["configured"] and status["traffic_scope"] == "explicit"
             assert not status["share_enabled"]
+            try:
+                opener.open(f"http://127.0.0.1:{ingress_port}/api/status", timeout=3)
+            except HTTPError as error:
+                assert error.code == 403 and json.load(error)["error"] == "ingress_only"
+            else:
+                raise AssertionError(
+                    "Dynamic Ingress must still reject non-Supervisor peers"
+                )
             assert all(
                 (directory / name).read_bytes() == value
                 for name, value in originals.items()
@@ -124,7 +137,9 @@ def main():
     for name, value in (("sources.json", sources), ("subscription.json", snapshot)):
         (directory / name).write_text(json.dumps(value), encoding="utf-8")
     with (directory / "emoji-startup.log").open("w+") as log:
-        process = subprocess.Popen(["python", "/manager.py"], stdout=log, stderr=log)
+        process = subprocess.Popen(
+            ["python", "/manager.py"], stdout=log, stderr=log, env=environment
+        )
         try:
             for _ in range(100):
                 assert process.poll() is None, "Manager exited during emoji startup"
@@ -145,10 +160,69 @@ def main():
         log.seek(0)
         output = log.read()
         assert secret not in output and url not in output
+    # A conflict on the fixed integration API must be identified before the
+    # core is launched or any transparent route is activated.
+    with socket.socket() as occupied_api:
+        occupied_api.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        occupied_api.bind(("127.0.0.1", 9091))
+        occupied_api.listen()
+        with (directory / "busy-api.log").open("w+") as log:
+            process = subprocess.Popen(
+                ["python", "/manager.py"], stdout=log, stderr=log, env=environment
+            )
+            assert process.wait(timeout=15) != 0
+            log.seek(0)
+            output = log.read()
+            assert "management_port_in_use:9091" in output, output
+            assert "Start initial configuration" not in output
+            assert secret not in output and url not in output
+            assert not (directory / "traffic-state.json").exists()
+            assert occupied_api.getsockname()[1] == 9091
     print(
-        "STARTUP PASS: actual manager process; emoji subscription startup; private settings/cache retained; reject recovery; no capture/sharing; guarded integration sync; manual repair; secret-free logs",
+        "STARTUP PASS: actual manager process; occupied 8099 bypassed with Supervisor-assigned Ingress; Ingress peer guard retained; busy API detected before core/routes; emoji subscription startup; private settings/cache retained; reject recovery; manual repair; secret-free logs",
         flush=True,
     )
+
+
+def main():
+    if os.environ.get("NP_ISOLATED_TEST") != "1":
+        raise SystemExit("Run only in an isolated disposable Docker container")
+    token = "isolated-supervisor-fixture-token"
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        ingress_port = unused.getsockname()[1]
+
+    class SupervisorAPI(BaseHTTPRequestHandler):
+        def do_GET(self):
+            assert self.headers.get("Authorization") == "Bearer " + token
+            data = {
+                "/addons/self/info": {"ingress_port": ingress_port},
+                "/supervisor/info": {"addons": []},
+                "/network/info": {"interfaces": []},
+            }.get(self.path, {})
+            body = json.dumps({"result": "ok", "data": data}).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    with Path("/etc/hosts").open("a") as hosts:
+        hosts.write("\n127.0.0.1 supervisor\n")
+    server = ThreadingHTTPServer(("127.0.0.1", 80), SupervisorAPI)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with socket.socket() as occupied_ingress:
+            occupied_ingress.bind(("0.0.0.0", 8099))
+            occupied_ingress.listen()
+            verify_startup(ingress_port, {**os.environ, "SUPERVISOR_TOKEN": token})
+            assert occupied_ingress.getsockname()[1] == 8099
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 if __name__ == "__main__":

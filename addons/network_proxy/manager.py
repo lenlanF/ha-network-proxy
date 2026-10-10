@@ -1,5 +1,6 @@
 """Source persistence, guarded Ingress UI and authenticated integration API."""
 
+import errno
 import hmac
 import html
 import http.client
@@ -18,7 +19,7 @@ from urllib.parse import urlsplit
 from generate import generate, source_choice
 from subscription import ConfigError, fetch_document, url_digest
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 SOURCE_DEFAULTS = {
     "subscription_url": "",
     "subscription_interval": 3600,
@@ -522,6 +523,44 @@ def handler_factory(
     return Handler
 
 
+def resolve_ingress_port(supervisor):
+    try:
+        port = supervisor.get("/addons/self/info")["ingress_port"]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ConfigError("ingress_port_unavailable") from None
+    if (
+        type(port) is not int
+        or not 1 <= port <= 65535
+        or port in (7890, 9090, 9091, 8123, 1053)
+    ):
+        raise ConfigError("ingress_port_invalid")
+    return port
+
+
+def bind_management_servers(store, secret, service, ingress_port, management_port=9091):
+    servers = []
+    try:
+        for port, ingress in ((management_port, False), (ingress_port, True)):
+            try:
+                server = ThreadingHTTPServer(
+                    ("0.0.0.0" if ingress else "127.0.0.1", port),
+                    handler_factory(store, secret, service, ingress=ingress),
+                )
+            except OSError as error:
+                role = "ingress" if ingress else "management"
+                reason = (
+                    "port_in_use" if error.errno == errno.EADDRINUSE else "bind_failed"
+                )
+                raise ConfigError(f"{role}_{reason}:{port}") from None
+            server.daemon_threads = True
+            servers.append(server)
+    except BaseException:
+        for server in servers:
+            server.server_close()
+        raise
+    return servers
+
+
 def main():
     from service import CoreClient, Service
     from traffic import Traffic
@@ -532,6 +571,8 @@ def main():
     secret = options["controller_secret"]
     client = CoreClient(secret)
     traffic = Traffic(directory)
+    ingress_port = resolve_ingress_port(traffic.supervisor)
+    options["_ingress_port"] = ingress_port
     store = SettingsStore(
         directory,
         options,
@@ -551,9 +592,13 @@ def main():
         service.record(
             "error", "启动配置被拒绝：" + store.recovery_error + "；请在网页修正并保存"
         )
-    core = subprocess.Popen(["mihomo", "-d", "/data", "-f", "/data/config.json"])
+    # Reserve both management listeners before launching the core or routes.
     servers = []
+    core = None
+    started_servers = []
     try:
+        servers = bind_management_servers(store, secret, service, ingress_port)
+        core = subprocess.Popen(["mihomo", "-d", "/data", "-f", "/data/config.json"])
         for _ in range(100):
             if core.poll() is not None:
                 raise RuntimeError("Proxy core exited during startup")
@@ -567,14 +612,13 @@ def main():
                 time.sleep(0.2)
         else:
             raise RuntimeError("Proxy core startup timed out")
-        for port, ingress in ((9091, False), (8099, True)):
-            server = ThreadingHTTPServer(
-                ("0.0.0.0" if ingress else "127.0.0.1", port),
-                handler_factory(store, secret, service, ingress=ingress),
-            )
-            server.daemon_threads = True
-            servers.append(server)
+        for server in servers:
             threading.Thread(target=server.serve_forever, daemon=True).start()
+            started_servers.append(server)
+        print(
+            f"Network Proxy management ready: loopback API 9091; Supervisor Ingress {ingress_port}",
+            flush=True,
+        )
 
         def reconcile():
             while core.poll() is None:
@@ -612,7 +656,7 @@ def main():
         raise SystemExit(core.wait())
     finally:
         traffic.cleanup()
-        if core.poll() is None:
+        if core is not None and core.poll() is None:
             core.terminate()
             try:
                 core.wait(timeout=10)
@@ -620,7 +664,8 @@ def main():
                 core.kill()
                 core.wait(timeout=5)
         for server in servers:
-            server.shutdown()
+            if server in started_servers:
+                server.shutdown()
             server.server_close()
 
 
