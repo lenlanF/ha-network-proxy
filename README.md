@@ -63,3 +63,5 @@ dns:
 ## 构建
 
 GitHub Actions 原生构建 amd64 / aarch64；HAOS 安装 GHCR 预构建镜像。PR 测试不发布镜像；发布流程通过真实协议和隔离 Linux 网络测试后才推送镜像。详情见 [TESTING.md](TESTING.md)。
+
+透明接入时应用固定使用 redir-host DNS 模式，避免局域网名称被转换为虚拟地址；订阅的上游 DNS 与其他 DNS 策略仍保留，常见本地名称默认使用系统 DNS。

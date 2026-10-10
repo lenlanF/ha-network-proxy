@@ -197,11 +197,24 @@ def generate(options, *, bootstrap=False, subscription_document=None):
         dns = config.get("dns", {})
         config["dns"] = {
             "nameserver": ["system"],
-            "enhanced-mode": "redir-host",
             **dns,
             "enable": True,
+            "enhanced-mode": "redir-host",
             "listen": ":1053",
         }
+        policy = dict(config["dns"].get("nameserver-policy") or {})
+        for name in (
+            "+.local",
+            "+.lan",
+            "+.home.arpa",
+            "+.local.hass.io",
+            "localhost",
+            "supervisor",
+            "homeassistant",
+            "hassio",
+        ):
+            policy.setdefault(name, ["system"])
+        config["dns"]["nameserver-policy"] = policy
         config["tun"] = {
             "enable": True,
             "device": "NetworkProxy",

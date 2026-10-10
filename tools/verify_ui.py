@@ -182,6 +182,7 @@ def main():
                 }
             )
             page.get_by_role("button", name="刷新状态", exact=True).click()
+            expect(page.locator("#integration-state")).to_contain_text("配套集成已连接")
             expect(
                 page.locator('#app-targets input[value="host_app"]')
             ).to_be_disabled()
@@ -189,6 +190,7 @@ def main():
             page.locator('#integration-targets input[value="demo_integration"]').check()
             page.get_by_role("button", name="保存流量模式", exact=True).click()
             expect(page.locator("#notice")).to_contain_text("流量模式已保存")
+            expect(page.locator("#traffic-state")).to_have_text("部分应用 / 集成")
             assert fixture.store.sources["selected_integrations"] == [
                 "demo_integration"
             ]

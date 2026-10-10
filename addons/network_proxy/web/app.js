@@ -46,6 +46,7 @@ async function api(path, method = "GET", data) {
 }
 async function action(button, label, operation) {
   if (button.disabled) return;
+  $("notice").hidden = true; $("notice").textContent = "";
   const previous = button.textContent; button.disabled = true; button.textContent = label;
   try { await operation(); } catch (error) { notice(error.message || "无法连接应用。", true); }
   finally { button.disabled = false; button.textContent = previous; }

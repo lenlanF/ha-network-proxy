@@ -90,6 +90,8 @@ def dns_answer(packet, address):
         end += packet[end] + 1
     end += 1
     kind = int.from_bytes(packet[end : end + 2], "big")
+    if packet[12:end].endswith(b"\x03lan\x00"):
+        address = UPSTREAM
     end += 4
     value = socket.inet_pton(
         socket.AF_INET6 if kind == 28 else socket.AF_INET,
@@ -472,6 +474,19 @@ def main():
                 check(namespace, "dns", TARGET, "172.30.32.3")
             check(None, "tcp", "proxied", TARGET6)
             check(None, "udp", "proxied:fixture", TARGET6)
+            # Verify Mihomo's system DNS sockets bypass our DNS redirect rather
+            # than looping, and private names do not turn into synthetic IPs.
+            Path("/etc/resolv.conf").write_text(
+                "nameserver 172.30.32.3\noptions timeout:1 attempts:1\n"
+            )
+            store.update(
+                {
+                    "extension_yaml": "dns:\n  nameserver: [system]\n  enhanced-mode: fake-ip\n"
+                }
+            )
+            check(None, "dns", "198.51.100.55", "172.30.32.3")
+            check("np-a", "dns", "198.51.100.55", "172.30.32.3")
+            check(None, "tcp", "direct", "private.lan")
             check(None, "tcp", "direct", UPSTREAM)
             store.update({"core_mode": "direct"})
             check(None, "tcp", "direct")
@@ -492,8 +507,17 @@ def main():
             check("np-a", "dns", "198.51.100.55", "172.30.32.3")
             assert not traffic.path.exists()
             assert "20227" not in run("ip", "rule", "show")
+            store.update({"traffic_mode": "haos"})
+            check(None, "tcp", "proxied")
+            core.terminate()
+            core.wait(timeout=10)
+            traffic.cleanup()
+            check(None, "tcp", "direct")
+            check("np-a", "udp", "direct:fixture")
+            check("np-b", "dns", "198.51.100.55", "172.30.32.3")
+            assert "20226" not in run("ip", "rule", "show")
             print(
-                "TUN PASS: selected/unselected apps; whole host/apps; TCP, UDP, DNS, IPv6; private bypass; direct/global; LAN sharing; cleanup",
+                "TUN PASS: selected/unselected apps; whole host/apps; TCP, UDP, DNS, IPv6; system DNS without loops; private names; direct/global; LAN sharing; stop recovery",
                 flush=True,
             )
         except Exception:
