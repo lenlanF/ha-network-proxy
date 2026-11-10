@@ -34,7 +34,7 @@ from subscription import (
     url_digest,
 )
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 SOURCE_DEFAULTS = {
     "proxy_enabled": True,
     "subscriptions": [],
