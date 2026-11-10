@@ -43,8 +43,9 @@ async function openEditor(identity) {
   const profile = catalog.profiles.find(item => item.id === identity);
   $("editor-title").textContent = `订阅配置 · ${profile.name}`;
   $("editor-view").value = "editable";
-  $("config-editor").hidden = false;
-  await loadEditor(); location.hash = "config-editor";
+  await loadEditor();
+  $("config-editor").dataset.loaded = "true";
+  navigateTo("config-editor");
 }
 async function loadEditor() {
   const view = $("editor-view").value;

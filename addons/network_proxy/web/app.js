@@ -165,7 +165,33 @@ $("refresh-status").addEventListener("click", (event) => action(event.currentTar
 $("refresh-subscription").addEventListener("click", (event) => action(event.currentTarget, "更新中", async () => { await api("refresh", "POST", {}); await refreshStatus(); notice("订阅已重新拉取并加载。"); }));
 $("test-outlet").addEventListener("click", (event) => action(event.currentTarget, "测试中", async () => { $("test-result").textContent = "测试中…"; try { const result = await api("test", "POST", {}); $("test-result").textContent = `${result.latency_ms} ms`; notice(`出口收到 HTTP ${result.status} 响应。此测试验证代理出口，流量接入需另行核验。`); await refreshEvents(); } catch (error) { $("test-result").textContent = "未连通"; throw error; } }));
 $("diagnose-outlet").addEventListener("click", (event) => action(event.currentTarget, "诊断中", async () => { $("diagnostic-results").replaceChildren(element("p", "empty", "正在检查认证与 HTTPS…")); const result = await api("diagnose", "POST", {}); $("diagnostic-results").replaceChildren(); for (const check of result.checks) { const stage = check.stage === "upstream_connect" ? "已保存共享上游握手" : `当前${result.active_outlet === "lan" ? "共享上游" : "订阅配置"} HTTPS 出口`; $("diagnostic-results").append(element("p", "field-note", `${stage} · ${check.target}：${check.ok ? `成功 · HTTP ${check.http_status}` : errors[check.code] || "失败"}`)); } await refreshEvents(); }));
-function navigation() { for (const link of document.querySelectorAll("nav a")) link.classList.toggle("active", link.hash === (location.hash || "#overview")); }
+function navigation(event) {
+  const links = [...document.querySelectorAll("nav a")];
+  const pages = [...document.querySelectorAll("main > section")];
+  let page = location.hash.slice(1) || "overview";
+  if (page === "legacy-rules") page = "traffic";
+  if (page === "config-editor" && !$("config-editor").dataset.loaded) page = "subscriptions";
+  if (!pages.some((section) => section.id === page)) page = "overview";
+  if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
+  for (const section of pages) section.hidden = section.id !== page;
+  const menu = page === "config-editor" ? "subscriptions" : page;
+  for (const link of links) {
+    const active = link.hash === `#${menu}`;
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+  if (event) {
+    const heading = $(page).querySelector("h2");
+    heading.tabIndex = -1;
+    heading.focus({preventScroll: true});
+    window.scrollTo({top: 0, left: 0, behavior: "instant"});
+  }
+}
+function navigateTo(page) {
+  if (location.hash === `#${page}`) navigation(true);
+  else location.hash = page;
+}
 window.addEventListener("hashchange", navigation); navigation();
 async function init() { const buttons = [...document.querySelectorAll("form button")]; buttons.forEach((b) => b.disabled = true); try { await loadSettings(); await loadProfiles(); await loadPolicies(); ready = true; await refreshStatus(); } catch (error) { notice(error.message, true); } finally { buttons.forEach((b) => b.disabled = !ready); } }
 init(); setInterval(() => { if (ready && !document.hidden) refreshStatus().catch(() => {}); }, 15000);
